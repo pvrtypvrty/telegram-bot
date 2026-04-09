@@ -232,7 +232,7 @@ bot.command("generate", async (ctx) => {
     if (!isSub) await deductCredits(ctx.from.id.toString(), COST_PER_IMAGE);
 
     const output = await replicate.run(
-      "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+      "black-forest-labs/flux-schnell",
       { input: { prompt, num_outputs: 1, width: 1024, height: 1024 } }
     );
 
