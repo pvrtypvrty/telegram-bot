@@ -233,7 +233,7 @@ bot.command("generate", async (ctx) => {
 
     const output = await replicate.run(
       "black-forest-labs/flux-2-pro",
-      { input: { prompt, { input: { prompt, num_outputs: 1, width: 2048, height: 2048 } }: 1, width: 1024, height: 1024 } }
+      { input: { prompt, { input: { prompt, num_outputs: 1, width: 1152, height: 2048 } }: 1, width: 1024, height: 1024 } }
     );
 
     const imageUrl = output[0];
@@ -242,12 +242,13 @@ bot.command("generate", async (ctx) => {
 
     const newCredits = isSub ? userData.credits : userData.credits - COST_PER_IMAGE;
 
-    await ctx.replyWithPhoto(
+    const photoMsg = await ctx.replyWithPhoto(
       { url: imageUrl },
       {
         caption:
           `✅ *Done!*\n\n📝 _${prompt}_\n` +
-          (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`),
+          (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`) +
+          `\n⏱ _This image will be deleted in 1 hour_`,
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Generate Another", "generate_help")],
@@ -255,6 +256,13 @@ bot.command("generate", async (ctx) => {
         ]),
       }
     );
+
+    // Delete image after 1 hour
+    setTimeout(async () => {
+      try {
+        await ctx.telegram.deleteMessage(ctx.chat.id, photoMsg.message_id);
+      } catch (e) {}
+    }, 60 * 60 * 1000);
   } catch (err) {
     console.error(err);
     if (!isSub) {
