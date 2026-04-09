@@ -255,8 +255,8 @@ async function showBuyMenu(ctx) {
         }
       );
     } catch (err) {
-      console.error(err);
-      ctx.reply("❌ Error creating payment link. Try again.");
+    console.error("STRIPE ERROR:", JSON.stringify(err, null, 2));
+    ctx.reply("❌ Error: " + err.message);
     }
   });
 });
