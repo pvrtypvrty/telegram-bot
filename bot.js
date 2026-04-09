@@ -469,15 +469,15 @@ bot.command("listusers", async (ctx) => {
   ctx.reply(`👥 *Recent Users*\n\n${list}`, { parse_mode: "Markdown" });
 });
 
-bot.launch().catch(err => {
-  if (err.message && err.message.includes('409')) {
-    console.log('Another instance detected, waiting 10 seconds...');
-    setTimeout(() => process.exit(0), 10000);
-  } else {
-    console.error(err);
-    process.exit(1);
+// Use webhooks to avoid 409 polling conflicts
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+bot.launch({
+  webhook: {
+    domain: WEBHOOK_URL,
+    port: process.env.PORT || 3001,
+    path: "/bot",
   }
 });
-console.log("🤖 Bot running...");
+console.log("🤖 Bot running on webhook...");
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
