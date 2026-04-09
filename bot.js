@@ -469,7 +469,15 @@ bot.command("listusers", async (ctx) => {
   ctx.reply(`👥 *Recent Users*\n\n${list}`, { parse_mode: "Markdown" });
 });
 
-bot.launch();
+bot.launch().catch(err => {
+  if (err.message && err.message.includes('409')) {
+    console.log('Another instance detected, waiting 10 seconds...');
+    setTimeout(() => process.exit(0), 10000);
+  } else {
+    console.error(err);
+    process.exit(1);
+  }
+});
 console.log("🤖 Bot running...");
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
