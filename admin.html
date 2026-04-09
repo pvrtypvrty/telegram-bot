@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PVRTYX — Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  :root {
+    --bg: #050505;
+    --surface: #0e0e0e;
+    --surface2: #161616;
+    --border: #222;
+    --accent: #e8ff47;
+    --accent2: #ff4747;
+    --accent3: #47ffd4;
+    --text: #f0f0f0;
+    --muted: #555;
+    --green: #47ff8a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* SCANLINE EFFECT */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* LOGIN SCREEN */
+  #login-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  .login-box {
+    width: 360px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 48px 40px;
+    position: relative;
+  }
+
+  .login-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .login-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 42px;
+    letter-spacing: 0.05em;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+
+  .login-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin-bottom: 36px;
+  }
+
+  .login-input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    padding: 14px 16px;
+    outline: none;
+    margin-bottom: 16px;
+    transition: border-color 0.2s;
+  }
+
+  .login-input:focus { border-color: var(--accent); }
+
+  .login-btn {
+    width: 100%;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 18px;
+    letter-spacing: 0.1em;
+    padding: 14px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .login-btn:hover { opacity: 0.85; }
+
+  .login-error {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--accent2);
+    margin-top: 12px;
+    display: none;
+  }
+
+  /* MAIN LAYOUT */
+  #dashboard { display: none; }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 0 40px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    background: rgba(5,5,5,0.95);
+    backdrop-filter: blur(10px);
+    z-index: 50;
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+
+  .logo span { color: var(--muted); font-size: 12px; font-family: 'Space Mono', monospace; margin-left: 12px; letter-spacing: 0.15em; }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--green);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  .refresh-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    padding: 6px 14px;
+    cursor: pointer;
+    letter-spacing: 0.1em;
+    transition: all 0.2s;
+  }
+
+  .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px;
+  }
+
+  /* STATS GRID */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin-bottom: 40px;
+    border: 1px solid var(--border);
+  }
+
+  .stat-card {
+    background: var(--surface);
+    padding: 32px 28px;
+    position: relative;
+    overflow: hidden;
+    animation: fadeUp 0.4s ease both;
+  }
+
+  .stat-card:nth-child(1) { animation-delay: 0.05s; }
+  .stat-card:nth-child(2) { animation-delay: 0.1s; }
+  .stat-card:nth-child(3) { animation-delay: 0.15s; }
+  .stat-card:nth-child(4) { animation-delay: 0.2s; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .stat-card::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transition: transform 0.3s;
+    transform-origin: left;
+  }
+
+  .stat-card:hover::after { transform: scaleX(1); }
+
+  .stat-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: var(--muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .stat-value {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 52px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    margin-bottom: 8px;
+  }
+
+  .stat-value.green { color: var(--green); }
+  .stat-value.yellow { color: var(--accent); }
+  .stat-value.red { color: var(--accent2); }
+  .stat-value.cyan { color: var(--accent3); }
+
+  .stat-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  /* GRID 2 COL */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+
+  /* PANELS */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    animation: fadeUp 0.4s ease both;
+  }
+
+  .panel-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .panel-title {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+
+  .panel-title span {
+    color: var(--accent);
+    margin-right: 8px;
+  }
+
+  .panel-body { padding: 24px; }
+
+  /* TABLE */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .data-table th {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-size: 13px;
+    color: #aaa;
+  }
+
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .data-table td:first-child { color: var(--text); font-weight: 500; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 2px;
+  }
+
+  .badge-green { background: rgba(71,255,138,0.1); color: var(--green); }
+  .badge-yellow { background: rgba(232,255,71,0.1); color: var(--accent); }
+  .badge-red { background: rgba(255,71,71,0.1); color: var(--accent2); }
+  .badge-cyan { background: rgba(71,255,212,0.1); color: var(--accent3); }
+
+  /* CHART */
+  .chart-container {
+    position: relative;
+    height: 220px;
+  }
+
+  /* EMPTY STATE */
+  .empty {
+    text-align: center;
+    padding: 40px;
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  /* LOADING */
+  .loading {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    animation: blink 1s infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .ticker {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 1100px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 600px) {
+    .container { padding: 20px; }
+    header { padding: 0 20px; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .stat-value { font-size: 36px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-title">PVRTYX</div>
+    <div class="login-sub">Admin Dashboard</div>
+    <input class="login-input" type="password" id="password-input" placeholder="Enter admin password" />
+    <button class="login-btn" onclick="checkPassword()">ACCESS →</button>
+    <div class="login-error" id="login-error">Invalid password</div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboard">
+  <header>
+    <div style="display:flex;align-items:center;gap:16px">
+      <div class="logo">PVRTYX <span>ADMIN</span></div>
+    </div>
+    <div class="header-right">
+      <div class="live-badge"><div class="live-dot"></div> Live</div>
+      <div class="ticker" id="last-updated">—</div>
+      <button class="refresh-btn" onclick="loadAll()">↻ REFRESH</button>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- STATS -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Revenue</div>
+        <div class="stat-value green" id="stat-revenue">—</div>
+        <div class="stat-sub" id="stat-revenue-sub">loading...</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Users</div>
+        <div class="stat-value yellow" id="stat-users">—</div>
+        <div class="stat-sub" id="stat-users-sub">loading...</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Images Generated</div>
+        <div class="stat-value cyan" id="stat-generations">—</div>
+        <div class="stat-sub" id="stat-gen-sub">loading...</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Active Subscribers</div>
+        <div class="stat-value red" id="stat-subs">—</div>
+        <div class="stat-sub" id="stat-subs-sub">loading...</div>
+      </div>
+    </div>
+
+    <!-- CHARTS ROW -->
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>▸</span> Revenue Last 7 Days</div>
+        </div>
+        <div class="panel-body">
+          <div class="chart-container">
+            <canvas id="revenue-chart"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>▸</span> Generations Last 7 Days</div>
+        </div>
+        <div class="panel-body">
+          <div class="chart-container">
+            <canvas id="gen-chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TABLES ROW -->
+    <div class="grid-3">
+      <!-- RECENT TRANSACTIONS -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>▸</span> Recent Transactions</div>
+        </div>
+        <div class="panel-body" style="padding:0">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Type</th>
+                <th>Credits</th>
+                <th>Amount</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody id="transactions-body">
+              <tr><td colspan="5" class="empty loading">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TOP USERS -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>▸</span> Top Users</div>
+        </div>
+        <div class="panel-body" style="padding:0">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Credits</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="users-body">
+              <tr><td colspan="3" class="empty loading">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECENT GENERATIONS -->
+    <div class="panel" style="margin-bottom:40px">
+      <div class="panel-header">
+        <div class="panel-title"><span>▸</span> Recent Generations</div>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Prompt</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody id="generations-body">
+            <tr><td colspan="3" class="empty loading">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG — FILL THESE IN
+// ============================================================
+const SUPABASE_URL = 'https://plpjglnxriucswmswwnm.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBscGpnbG54cml1Y3N3bXN3d25tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MDA1NTgsImV4cCI6MjA5MTI3NjU1OH0.Vk4PqZy44BZxlj8xgNQCf8CZpNkeLnUVnwex64vw8Y0';
+const ADMIN_PASSWORD = 'pvrtyx2024'; // set any password you want
+// ============================================================
+
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let revenueChart, genChart;
+
+// ── AUTH ─────────────────────────────────────────────────────
+function checkPassword() {
+  const val = document.getElementById('password-input').value;
+  if (val === ADMIN_PASSWORD) {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    loadAll();
+    setInterval(loadAll, 30000); // auto refresh every 30s
+  } else {
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+document.getElementById('password-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') checkPassword();
+});
+
+// ── LOAD ALL DATA ─────────────────────────────────────────────
+async function loadAll() {
+  await Promise.all([
+    loadStats(),
+    loadTransactions(),
+    loadUsers(),
+    loadGenerations(),
+    loadCharts(),
+  ]);
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ── STATS ─────────────────────────────────────────────────────
+async function loadStats() {
+  // Total revenue
+  const { data: txns } = await db.from('transactions').select('amount_paid');
+  const totalRevenue = txns ? txns.reduce((sum, t) => sum + (t.amount_paid || 0), 0) / 100 : 0;
+  document.getElementById('stat-revenue').textContent = '$' + totalRevenue.toFixed(2);
+  document.getElementById('stat-revenue-sub').textContent = `${txns?.length || 0} total transactions`;
+
+  // Users
+  const { count: userCount } = await db.from('users').select('*', { count: 'exact', head: true });
+  document.getElementById('stat-users').textContent = userCount || 0;
+
+  // New users today
+  const today = new Date(); today.setHours(0,0,0,0);
+  const { count: newToday } = await db.from('users')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', today.toISOString());
+  document.getElementById('stat-users-sub').textContent = `+${newToday || 0} today`;
+
+  // Generations
+  const { count: genCount } = await db.from('generations').select('*', { count: 'exact', head: true });
+  document.getElementById('stat-generations').textContent = genCount || 0;
+
+  const { count: genToday } = await db.from('generations')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', today.toISOString());
+  document.getElementById('stat-gen-sub').textContent = `+${genToday || 0} today`;
+
+  // Subscribers
+  const { count: subCount } = await db.from('users')
+    .select('*', { count: 'exact', head: true })
+    .eq('subscription_active', true);
+  document.getElementById('stat-subs').textContent = subCount || 0;
+  document.getElementById('stat-subs-sub').textContent = `$${((subCount || 0) * 14.99).toFixed(2)}/mo MRR`;
+}
+
+// ── TRANSACTIONS ──────────────────────────────────────────────
+async function loadTransactions() {
+  const { data } = await db.from('transactions')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  const tbody = document.getElementById('transactions-body');
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No transactions yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(t => `
+    <tr>
+      <td>${t.telegram_id}</td>
+      <td><span class="badge ${t.type === 'subscription' ? 'badge-cyan' : 'badge-yellow'}">${t.type}</span></td>
+      <td>${t.credits || '∞'}</td>
+      <td style="color:var(--green)">$${((t.amount_paid || 0) / 100).toFixed(2)}</td>
+      <td style="font-family:'Space Mono',monospace;font-size:11px">${new Date(t.created_at).toLocaleDateString()}</td>
+    </tr>
+  `).join('');
+}
+
+// ── USERS ─────────────────────────────────────────────────────
+async function loadUsers() {
+  const { data } = await db.from('users')
+    .select('*')
+    .order('credits', { ascending: false })
+    .limit(15);
+
+  const tbody = document.getElementById('users-body');
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No users yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(u => `
+    <tr>
+      <td>${u.username || u.telegram_id}</td>
+      <td style="font-family:'Space Mono',monospace">${u.credits}</td>
+      <td><span class="badge ${u.subscription_active ? 'badge-green' : 'badge-red'}">${u.subscription_active ? 'SUB' : 'FREE'}</span></td>
+    </tr>
+  `).join('');
+}
+
+// ── GENERATIONS ───────────────────────────────────────────────
+async function loadGenerations() {
+  const { data } = await db.from('generations')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  const tbody = document.getElementById('generations-body');
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">No generations yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(g => `
+    <tr>
+      <td>${g.telegram_id}</td>
+      <td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${g.prompt}</td>
+      <td style="font-family:'Space Mono',monospace;font-size:11px">${new Date(g.created_at).toLocaleDateString()} ${new Date(g.created_at).toLocaleTimeString()}</td>
+    </tr>
+  `).join('');
+}
+
+// ── CHARTS ────────────────────────────────────────────────────
+async function loadCharts() {
+  // Last 7 days labels
+  const days = [];
+  const revenueData = [];
+  const genData = [];
+
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    d.setHours(0,0,0,0);
+    const next = new Date(d); next.setDate(next.getDate() + 1);
+
+    days.push(d.toLocaleDateString('en', { weekday: 'short' }));
+
+    const { data: dayTxns } = await db.from('transactions')
+      .select('amount_paid')
+      .gte('created_at', d.toISOString())
+      .lt('created_at', next.toISOString());
+
+    const dayRevenue = dayTxns ? dayTxns.reduce((sum, t) => sum + (t.amount_paid || 0), 0) / 100 : 0;
+    revenueData.push(dayRevenue);
+
+    const { count: dayGens } = await db.from('generations')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', d.toISOString())
+      .lt('created_at', next.toISOString());
+
+    genData.push(dayGens || 0);
+  }
+
+  const chartDefaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        grid: { color: 'rgba(255,255,255,0.04)' },
+        ticks: { color: '#555', font: { family: 'Space Mono', size: 10 } }
+      },
+      y: {
+        grid: { color: 'rgba(255,255,255,0.04)' },
+        ticks: { color: '#555', font: { family: 'Space Mono', size: 10 } },
+        beginAtZero: true
+      }
+    }
+  };
+
+  // Revenue chart
+  if (revenueChart) revenueChart.destroy();
+  revenueChart = new Chart(document.getElementById('revenue-chart'), {
+    type: 'bar',
+    data: {
+      labels: days,
+      datasets: [{
+        data: revenueData,
+        backgroundColor: 'rgba(232,255,71,0.15)',
+        borderColor: 'rgba(232,255,71,0.8)',
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        tooltip: {
+          callbacks: { label: ctx => '$' + ctx.raw.toFixed(2) }
+        }
+      }
+    }
+  });
+
+  // Gen chart
+  if (genChart) genChart.destroy();
+  genChart = new Chart(document.getElementById('gen-chart'), {
+    type: 'line',
+    data: {
+      labels: days,
+      datasets: [{
+        data: genData,
+        borderColor: 'rgba(71,255,212,0.8)',
+        backgroundColor: 'rgba(71,255,212,0.05)',
+        borderWidth: 2,
+        pointBackgroundColor: 'rgba(71,255,212,1)',
+        pointRadius: 3,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: chartDefaults
+  });
+}
+</script>
+</body>
+</html>

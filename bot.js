@@ -1,5 +1,5 @@
 // ============================================================
-// TELEGRAM IMAGE BOT — bot.js
+// TELEGRAM IMAGE BOT — bot.js (with referral system)
 // ============================================================
 require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
@@ -12,11 +12,12 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ── CREDIT COSTS ─────────────────────────────────────────────
-const COST_PER_IMAGE = 5; // credits per generation
+const COST_PER_IMAGE = 5;
+const REFERRAL_REWARD = 10;   // credits referrer gets
+const REFERRAL_BONUS = 5;     // credits new user gets for joining via referral
 
 // ── HELPERS ──────────────────────────────────────────────────
-async function getOrCreateUser(telegramId, username) {
+async function getOrCreateUser(telegramId, username, referredBy = null) {
   const { data: existing } = await supabase
     .from("users")
     .select("*")
@@ -25,11 +26,46 @@ async function getOrCreateUser(telegramId, username) {
 
   if (existing) return existing;
 
+  const startCredits = referredBy ? 10 + REFERRAL_BONUS : 10;
+
   const { data: newUser } = await supabase
     .from("users")
-    .insert({ telegram_id: telegramId, username, credits: 10 }) // 10 free starter credits
+    .insert({
+      telegram_id: telegramId,
+      username,
+      credits: startCredits,
+      referred_by: referredBy || null,
+    })
     .select()
     .single();
+
+  // Reward referrer
+  if (referredBy) {
+    const { data: referrer } = await supabase
+      .from("users")
+      .select("credits, referral_count, referral_credits_earned")
+      .eq("telegram_id", referredBy)
+      .single();
+
+    if (referrer) {
+      await supabase
+        .from("users")
+        .update({
+          credits: referrer.credits + REFERRAL_REWARD,
+          referral_count: (referrer.referral_count || 0) + 1,
+          referral_credits_earned: (referrer.referral_credits_earned || 0) + REFERRAL_REWARD,
+        })
+        .eq("telegram_id", referredBy);
+
+      // Notify referrer
+      try {
+        await bot.telegram.sendMessage(
+          referredBy,
+          `🎉 Someone joined using your referral link!\n\n+${REFERRAL_REWARD} credits added to your account!`
+        );
+      } catch (e) {}
+    }
+  }
 
   return newUser;
 }
@@ -70,31 +106,82 @@ async function logGeneration(telegramId, prompt, imageUrl) {
 
 // ── /start ────────────────────────────────────────────────────
 bot.start(async (ctx) => {
+  const payload = ctx.startPayload;
+  let referredBy = null;
+
+  if (payload && payload.startsWith("ref_")) {
+    referredBy = payload.replace("ref_", "");
+    if (referredBy === ctx.from.id.toString()) referredBy = null;
+  }
+
   const user = await getOrCreateUser(
     ctx.from.id.toString(),
-    ctx.from.username || ctx.from.first_name
+    ctx.from.username || ctx.from.first_name,
+    referredBy
   );
 
-  await ctx.replyWithPhoto(
-    { url: "https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?w=800" },
+  const welcomeExtra = referredBy
+    ? `\n🎁 You joined via referral — bonus *+${REFERRAL_BONUS} credits* added!\n`
+    : "";
+
+  await ctx.reply(
+    `✨ *Welcome to ImageBot!*\n\n` +
+    welcomeExtra +
+    `You have *${user.credits} credits* to start.\n\n` +
+    `Each image costs *${COST_PER_IMAGE} credits*.\n\n` +
+    `/generate [prompt] — Create an image\n` +
+    `/buy — Purchase credits\n` +
+    `/subscribe — Unlimited monthly\n` +
+    `/referral — Invite friends & earn credits\n` +
+    `/balance — Check your credits`,
     {
-      caption:
-        `✨ *Welcome to ImageBot!*\n\n` +
-        `You've been given *${user.credits} free credits* to start.\n\n` +
-        `Each image costs *${COST_PER_IMAGE} credits*.\n\n` +
-        `Use /generate followed by your prompt to create an image.\n` +
-        `Use /buy to purchase more credits.\n` +
-        `Use /subscribe for unlimited monthly access.\n` +
-        `Use /balance to check your credits.`,
       parse_mode: "Markdown",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🎨 Generate Image", "generate_help")],
+        [Markup.button.callback("👥 Refer Friends", "show_referral")],
         [Markup.button.callback("💰 Buy Credits", "buy_menu")],
-        [Markup.button.callback("⭐ Subscribe", "subscribe_menu")],
       ]),
     }
   );
 });
+
+// ── /referral ─────────────────────────────────────────────────
+bot.command("referral", async (ctx) => {
+  await showReferral(ctx);
+});
+
+bot.action("show_referral", async (ctx) => {
+  await ctx.answerCbQuery();
+  await showReferral(ctx);
+});
+
+async function showReferral(ctx) {
+  const telegramId = ctx.from.id.toString();
+  const { data: user } = await supabase
+    .from("users")
+    .select("referral_count, referral_credits_earned")
+    .eq("telegram_id", telegramId)
+    .single();
+
+  const botUsername = ctx.botInfo.username;
+  const referralLink = `https://t.me/${botUsername}?start=ref_${telegramId}`;
+
+  await ctx.reply(
+    `👥 *Your Referral Link*\n\n` +
+    `Share this link and earn *${REFERRAL_REWARD} credits* for every person who joins!\n\n` +
+    `🔗 \`${referralLink}\`\n\n` +
+    `📊 *Your Stats*\n` +
+    `• Total referrals: *${user?.referral_count || 0}*\n` +
+    `• Credits earned: *${user?.referral_credits_earned || 0}*\n\n` +
+    `New users who join via your link also get *+${REFERRAL_BONUS} bonus credits*!`,
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.url("📤 Share Link", `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent("Join this AI image generator bot and get free credits!")}`)],
+      ]),
+    }
+  );
+}
 
 // ── /balance ──────────────────────────────────────────────────
 bot.command("balance", async (ctx) => {
@@ -107,9 +194,10 @@ bot.command("balance", async (ctx) => {
 
   ctx.reply(
     `💳 *Your Account*\n\n` +
-      `Credits: *${data.credits}*\n` +
-      `Subscription: ${subStatus}\n\n` +
-      `Each image costs ${COST_PER_IMAGE} credits.`,
+    `Credits: *${data.credits}*\n` +
+    `Subscription: ${subStatus}\n\n` +
+    `Each image costs ${COST_PER_IMAGE} credits.\n` +
+    `Use /referral to earn free credits!`,
     { parse_mode: "Markdown" }
   );
 });
@@ -128,13 +216,12 @@ bot.command("generate", async (ctx) => {
   const userData = await getCredits(ctx.from.id.toString());
   if (!userData) return ctx.reply("Use /start first.");
 
-  // Subscription users get free generations
   const isSub = userData.subscription_active &&
     new Date(userData.subscription_expires_at) > new Date();
 
   if (!isSub && userData.credits < COST_PER_IMAGE) {
     return ctx.reply(
-      `❌ Not enough credits!\n\nYou have *${userData.credits}* credits but need *${COST_PER_IMAGE}*.\n\nUse /buy to get more or /subscribe for unlimited access.`,
+      `❌ Not enough credits!\n\nYou have *${userData.credits}* but need *${COST_PER_IMAGE}*.\n\nUse /buy to get more or /subscribe for unlimited access.`,
       { parse_mode: "Markdown" }
     );
   }
@@ -142,12 +229,8 @@ bot.command("generate", async (ctx) => {
   const thinkingMsg = await ctx.reply("🎨 Generating your image... please wait ~20 seconds");
 
   try {
-    // Deduct credits (skip for subscribers)
-    if (!isSub) {
-      await deductCredits(ctx.from.id.toString(), COST_PER_IMAGE);
-    }
+    if (!isSub) await deductCredits(ctx.from.id.toString(), COST_PER_IMAGE);
 
-    // Generate with Replicate (SDXL)
     const output = await replicate.run(
       "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
       { input: { prompt, num_outputs: 1, width: 1024, height: 1024 } }
@@ -155,8 +238,6 @@ bot.command("generate", async (ctx) => {
 
     const imageUrl = output[0];
     await logGeneration(ctx.from.id.toString(), prompt, imageUrl);
-
-    // Delete thinking message
     await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id);
 
     const newCredits = isSub ? userData.credits : userData.credits - COST_PER_IMAGE;
@@ -165,66 +246,51 @@ bot.command("generate", async (ctx) => {
       { url: imageUrl },
       {
         caption:
-          `✅ *Done!*\n\n` +
-          `📝 Prompt: _${prompt}_\n` +
-          (isSub ? `⭐ Subscriber — unlimited generations\n` : `💳 Credits remaining: *${newCredits}*\n`),
+          `✅ *Done!*\n\n📝 _${prompt}_\n` +
+          (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`),
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Generate Another", "generate_help")],
-          [Markup.button.callback("💳 Buy More Credits", "buy_menu")],
+          [Markup.button.callback("👥 Refer Friends", "show_referral")],
         ]),
       }
     );
   } catch (err) {
     console.error(err);
-    // Refund credits on error
     if (!isSub) {
       const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", ctx.from.id.toString()).single();
       await supabase.from("users").update({ credits: u.credits + COST_PER_IMAGE }).eq("telegram_id", ctx.from.id.toString());
     }
     await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id);
-    ctx.reply("❌ Generation failed. Your credits have been refunded. Try again!");
+    ctx.reply("❌ Generation failed. Credits refunded. Try again!");
   }
 });
 
 // ── /buy ──────────────────────────────────────────────────────
-bot.command("buy", async (ctx) => {
-  await showBuyMenu(ctx);
-});
-
-bot.action("buy_menu", async (ctx) => {
-  await ctx.answerCbQuery();
-  await showBuyMenu(ctx);
-});
+bot.command("buy", async (ctx) => { await showBuyMenu(ctx); });
+bot.action("buy_menu", async (ctx) => { await ctx.answerCbQuery(); await showBuyMenu(ctx); });
 
 async function showBuyMenu(ctx) {
   const packages = [
-    { name: "Starter", credits: 50, price: "$4.99", priceId: process.env.STRIPE_PRICE_50 },
-    { name: "Popular", credits: 150, price: "$9.99", priceId: process.env.STRIPE_PRICE_150 },
-    { name: "Pro", credits: 400, price: "$19.99", priceId: process.env.STRIPE_PRICE_400 },
+    { name: "Starter", credits: 50, price: "$4.99" },
+    { name: "Popular", credits: 150, price: "$9.99" },
+    { name: "Pro", credits: 400, price: "$19.99" },
   ];
-
-  const buttons = packages.map((p) => [
-    Markup.button.callback(
-      `${p.name} — ${p.credits} credits — ${p.price}`,
-      `buy_${p.credits}`
-    ),
-  ]);
 
   await ctx.reply(
     "💰 *Buy Credits*\n\nChoose a package:",
     {
       parse_mode: "Markdown",
-      ...Markup.inlineKeyboard(buttons),
+      ...Markup.inlineKeyboard(
+        packages.map((p) => [Markup.button.callback(`${p.name} — ${p.credits} credits — ${p.price}`, `buy_${p.credits}`)])
+      ),
     }
   );
 }
 
-// Handle buy actions
 ["50", "150", "400"].forEach((credits) => {
   bot.action(`buy_${credits}`, async (ctx) => {
     await ctx.answerCbQuery();
-
     const priceMap = {
       "50": process.env.STRIPE_PRICE_50,
       "150": process.env.STRIPE_PRICE_150,
@@ -238,59 +304,41 @@ async function showBuyMenu(ctx) {
         mode: "payment",
         success_url: `${process.env.WEBHOOK_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.WEBHOOK_URL}/payment-cancel`,
-        metadata: {
-          telegram_id: ctx.from.id.toString(),
-          credits: credits,
-          type: "credits",
-        },
+        metadata: { telegram_id: ctx.from.id.toString(), credits, type: "credits" },
       });
 
       await ctx.reply(
-        `💳 *Complete your purchase*\n\n${credits} credits\n\nClick below to pay securely:`,
+        `💳 *Complete your purchase*\n\n${credits} credits`,
         {
           parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([
-            [Markup.button.url("💳 Pay Now", session.url)],
-          ]),
+          ...Markup.inlineKeyboard([[Markup.button.url("💳 Pay Now", session.url)]]),
         }
       );
     } catch (err) {
-    console.error("STRIPE ERROR:", JSON.stringify(err, null, 2));
-    ctx.reply("❌ Error: " + err.message);
+      console.error("STRIPE ERROR:", JSON.stringify(err, null, 2));
+      ctx.reply("❌ Error: " + err.message);
     }
   });
 });
 
 // ── /subscribe ────────────────────────────────────────────────
-bot.command("subscribe", async (ctx) => {
-  await showSubscribeMenu(ctx);
-});
-
-bot.action("subscribe_menu", async (ctx) => {
-  await ctx.answerCbQuery();
-  await showSubscribeMenu(ctx);
-});
+bot.command("subscribe", async (ctx) => { await showSubscribeMenu(ctx); });
+bot.action("subscribe_menu", async (ctx) => { await ctx.answerCbQuery(); await showSubscribeMenu(ctx); });
 
 async function showSubscribeMenu(ctx) {
   await ctx.reply(
     "⭐ *Monthly Subscription*\n\n" +
-      "Get *unlimited image generations* for one flat monthly fee.\n\n" +
-      "• Unlimited generations\n" +
-      "• Priority queue\n" +
-      "• Cancel anytime\n\n" +
-      "*$14.99 / month*",
+    "Unlimited image generations for one flat fee.\n\n" +
+    "• Unlimited generations\n• Cancel anytime\n\n*$14.99 / month*",
     {
       parse_mode: "Markdown",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("⭐ Subscribe Now — $14.99/mo", "start_subscribe")],
-      ]),
+      ...Markup.inlineKeyboard([[Markup.button.callback("⭐ Subscribe Now — $14.99/mo", "start_subscribe")]]),
     }
   );
 }
 
 bot.action("start_subscribe", async (ctx) => {
   await ctx.answerCbQuery();
-
   try {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
@@ -298,23 +346,17 @@ bot.action("start_subscribe", async (ctx) => {
       mode: "subscription",
       success_url: `${process.env.WEBHOOK_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.WEBHOOK_URL}/payment-cancel`,
-      metadata: {
-        telegram_id: ctx.from.id.toString(),
-        type: "subscription",
-      },
+      metadata: { telegram_id: ctx.from.id.toString(), type: "subscription" },
     });
 
     await ctx.reply(
-      "⭐ *Subscribe for unlimited access*\n\nClick below to subscribe:",
+      "⭐ *Subscribe for unlimited access*",
       {
         parse_mode: "Markdown",
-        ...Markup.inlineKeyboard([
-          [Markup.button.url("⭐ Subscribe Now", session.url)],
-        ]),
+        ...Markup.inlineKeyboard([[Markup.button.url("⭐ Subscribe Now", session.url)]]),
       }
     );
   } catch (err) {
-    console.error(err);
     ctx.reply("❌ Error. Please try again.");
   }
 });
@@ -323,28 +365,26 @@ bot.action("start_subscribe", async (ctx) => {
 bot.action("generate_help", async (ctx) => {
   await ctx.answerCbQuery();
   ctx.reply(
-    "🎨 *How to Generate*\n\nSend:\n`/generate your prompt here`\n\nExamples:\n• `/generate neon tokyo street at night`\n• `/generate portrait of a warrior in gold armor`\n• `/generate abstract ocean waves in oil paint style`",
+    "🎨 Send:\n`/generate your prompt here`",
     { parse_mode: "Markdown" }
   );
 });
 
-// ── /help ─────────────────────────────────────────────────────
 bot.command("help", async (ctx) => {
   ctx.reply(
     "📖 *Commands*\n\n" +
-      "/start — Welcome & setup\n" +
-      "/generate [prompt] — Generate an image\n" +
-      "/balance — Check your credits\n" +
-      "/buy — Purchase credit packages\n" +
-      "/subscribe — Monthly unlimited plan\n" +
-      "/help — This menu",
+    "/start — Welcome\n" +
+    "/generate [prompt] — Generate image\n" +
+    "/balance — Check credits\n" +
+    "/referral — Invite friends & earn\n" +
+    "/buy — Purchase credits\n" +
+    "/subscribe — Monthly unlimited\n" +
+    "/help — This menu",
     { parse_mode: "Markdown" }
   );
 });
 
-// ── LAUNCH ────────────────────────────────────────────────────
 bot.launch();
 console.log("🤖 Bot running...");
-
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
