@@ -17,7 +17,6 @@ const COST_PER_EDIT = 10;
 const REFERRAL_REWARD = 10;
 const REFERRAL_BONUS = 5;
 
-// Store pending image edits (user uploaded image, waiting for prompt)
 const pendingEdits = new Map();
 
 // ── HELPERS ──────────────────────────────────────────────────
@@ -210,15 +209,11 @@ bot.on("photo", async (ctx) => {
     );
   }
 
-  // Get highest resolution photo
   const photos = ctx.message.photo;
   const photo = photos[photos.length - 1];
   const fileId = photo.file_id;
 
-  // Store the file ID waiting for edit prompt
   pendingEdits.set(telegramId, { fileId, timestamp: Date.now() });
-
-  // Clean up old pending edits after 10 minutes
   setTimeout(() => pendingEdits.delete(telegramId), 10 * 60 * 1000);
 
   await ctx.reply(
@@ -230,14 +225,10 @@ bot.on("photo", async (ctx) => {
 // ── HANDLE TEXT (for edit prompts) ────────────────────────────
 bot.on("text", async (ctx) => {
   const telegramId = ctx.from.id.toString();
-
-  // Check if user has a pending edit
   if (!pendingEdits.has(telegramId)) return;
 
   const { fileId } = pendingEdits.get(telegramId);
   const editPrompt = ctx.message.text;
-
-  // Clear pending edit
   pendingEdits.delete(telegramId);
 
   const userData = await getCredits(telegramId);
@@ -253,11 +244,9 @@ bot.on("text", async (ctx) => {
   try {
     if (!isSub) await deductCredits(telegramId, COST_PER_EDIT);
 
-    // Get the file URL from Telegram
     const fileLink = await ctx.telegram.getFileLink(fileId);
     const imageUrl = fileLink.href;
 
-    // Run flux-kontext-pro for image editing
     const output = await replicate.run(
       "black-forest-labs/flux-kontext-pro",
       {
@@ -265,6 +254,7 @@ bot.on("text", async (ctx) => {
           prompt: editPrompt,
           input_image: imageUrl,
           output_format: "jpg",
+          output_quality: 100,
           safety_tolerance: 6,
         }
       }
