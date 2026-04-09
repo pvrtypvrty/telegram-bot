@@ -269,7 +269,7 @@ bot.command("generate", async (ctx) => {
       const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", ctx.from.id.toString()).single();
       await supabase.from("users").update({ credits: u.credits + COST_PER_IMAGE }).eq("telegram_id", ctx.from.id.toString());
     }
-    await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id);
+    try { try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {} } catch(e) {}
     ctx.reply("❌ Generation failed. Credits refunded. Try again!");
   }
 });
