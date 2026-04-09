@@ -233,7 +233,7 @@ bot.command("generate", async (ctx) => {
 
     const output = await replicate.run(
       "black-forest-labs/flux-2-pro",
-      { input: { prompt, { input: { prompt, num_outputs: 1, width: 1152, height: 2048 } }: 1, width: 1024, height: 1024 } }
+      { input: { prompt, num_outputs: 1, width: 1152, height: 2048 } }
     );
 
     const imageUrl = output[0];
