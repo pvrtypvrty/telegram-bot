@@ -469,15 +469,7 @@ bot.command("listusers", async (ctx) => {
   ctx.reply(`👥 *Recent Users*\n\n${list}`, { parse_mode: "Markdown" });
 });
 
-// Use webhooks to avoid 409 polling conflicts
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-bot.launch({
-  webhook: {
-    domain: WEBHOOK_URL,
-    port: process.env.PORT || 3001,
-    path: "/bot",
-  }
-});
-console.log("🤖 Bot running on webhook...");
+bot.launch();
+console.log("🤖 Bot running...");
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
