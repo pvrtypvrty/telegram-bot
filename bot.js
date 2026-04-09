@@ -431,7 +431,15 @@ bot.on("text", async (ctx) => {
       const imageUrl = fileLink.href;
 
       const output = await replicate.run(
-        "kwaivgi/kling-v2.1",
+        const output = await replicate.run(
+      const output = await replicate.run(
+      "kwaivgi/kling-v2.1",
+      { input: { prompt: videoPrompt, start_image: imageUrl, duration: 10, aspect_ratio: "9:16", mode: "pro" } },
+      { wait: { interval: 5000, maxAttempts: 120 } }
+    );
+      { input: { prompt, duration: 10, aspect_ratio: "9:16", mode: "pro" } },
+      { wait: { interval: 5000, maxAttempts: 120 } }
+    );
         { input: { prompt: videoPrompt, start_image: imageUrl, duration: 10, aspect_ratio: "9:16", mode: "pro" } }
       );
 
