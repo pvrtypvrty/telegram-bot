@@ -444,7 +444,7 @@ app.get("/payment-cancel", (req, res) => {
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_PATH = "/telegram";
 
-app.use(bot.webhookCallback({ domain: process.env.WEBHOOK_URL, path: WEBHOOK_PATH }));
+app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
