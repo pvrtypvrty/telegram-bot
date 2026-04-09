@@ -232,8 +232,8 @@ bot.command("generate", async (ctx) => {
     if (!isSub) await deductCredits(ctx.from.id.toString(), COST_PER_IMAGE);
 
     const output = await replicate.run(
-      "black-forest-labs/flux-schnell",
-      { input: { prompt, num_outputs: 1, width: 1024, height: 1024 } }
+      "black-forest-labs/flux-2-pro",
+      { input: { prompt, { input: { prompt, num_outputs: 1, width: 2048, height: 2048 } }: 1, width: 1024, height: 1024 } }
     );
 
     const imageUrl = output[0];
