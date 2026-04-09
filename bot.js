@@ -1,5 +1,5 @@
 // ============================================================
-// TELEGRAM IMAGE BOT — bot.js (with image editing)
+// TELEGRAM IMAGE BOT — bot.js (images + editing + video)
 // ============================================================
 require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
@@ -14,10 +14,13 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const COST_PER_IMAGE = 5;
 const COST_PER_EDIT = 10;
+const COST_PER_VIDEO = 50;
 const REFERRAL_REWARD = 10;
 const REFERRAL_BONUS = 5;
 
-const pendingEdits = new Map();
+// Pending states
+const pendingEdits = new Map();   // waiting for edit prompt after photo
+const pendingVideos = new Map();  // waiting for video prompt after photo (image-to-video)
 
 // ── HELPERS ──────────────────────────────────────────────────
 async function getOrCreateUser(telegramId, username, referredBy = null) {
@@ -67,10 +70,18 @@ async function logGeneration(telegramId, prompt, imageUrl) {
   await supabase.from("generations").insert({ telegram_id: telegramId, prompt, image_url: imageUrl });
 }
 
-function autoDeleteMessage(ctx, messageId, ms = 60 * 60 * 1000) {
+function autoDelete(ctx, messageId, ms = 60 * 60 * 1000) {
   setTimeout(async () => {
     try { await ctx.telegram.deleteMessage(ctx.chat.id, messageId); } catch(e) {}
   }, ms);
+}
+
+function getUrl(output) {
+  if (!output) return null;
+  if (typeof output === 'string') return output;
+  if (output[0]?.url) return output[0].url();
+  if (typeof output[0] === 'string') return output[0];
+  return null;
 }
 
 // ── /start ────────────────────────────────────────────────────
@@ -87,15 +98,18 @@ bot.start(async (ctx) => {
     `✨ *Welcome to ImageBot!*\n\n` + welcomeExtra +
     `You have *${user.credits} credits* to start.\n\n` +
     `🎨 *Generate image* — ${COST_PER_IMAGE} credits\n` +
-    `✏️ *Edit your image* — ${COST_PER_EDIT} credits\n\n` +
+    `✏️ *Edit your image* — ${COST_PER_EDIT} credits\n` +
+    `🎬 *Generate video* — ${COST_PER_VIDEO} credits\n\n` +
     `/generate [prompt] — Create an image\n` +
     `/edit — Upload & edit your image\n` +
+    `/video [prompt] — Create a video\n` +
     `/buy — Purchase credits\n` +
     `/subscribe — Unlimited monthly\n` +
     `/referral — Invite friends & earn\n` +
     `/balance — Check your credits`,
     { parse_mode: "Markdown", ...Markup.inlineKeyboard([
       [Markup.button.callback("🎨 Generate Image", "generate_help")],
+      [Markup.button.callback("🎬 Generate Video", "video_help")],
       [Markup.button.callback("✏️ Edit My Image", "edit_help")],
       [Markup.button.callback("💰 Buy Credits", "buy_menu")],
     ])}
@@ -108,7 +122,7 @@ bot.command("balance", async (ctx) => {
   if (!data) return ctx.reply("Start the bot first with /start");
   const subStatus = data.subscription_active ? `✅ Active (expires ${new Date(data.subscription_expires_at).toLocaleDateString()})` : "❌ None";
   ctx.reply(
-    `💳 *Your Account*\n\nCredits: *${data.credits}*\nSubscription: ${subStatus}\n\n🎨 Generate image: ${COST_PER_IMAGE} credits\n✏️ Edit image: ${COST_PER_EDIT} credits\n\nUse /referral to earn free credits!`,
+    `💳 *Your Account*\n\nCredits: *${data.credits}*\nSubscription: ${subStatus}\n\n🎨 Generate image: ${COST_PER_IMAGE} credits\n✏️ Edit image: ${COST_PER_EDIT} credits\n🎬 Generate video: ${COST_PER_VIDEO} credits\n\nUse /referral to earn free credits!`,
     { parse_mode: "Markdown" }
   );
 });
@@ -123,7 +137,7 @@ bot.command("generate", async (ctx) => {
 
   const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
   if (!isSub && userData.credits < COST_PER_IMAGE) {
-    return ctx.reply(`❌ Not enough credits!\n\nYou have *${userData.credits}* but need *${COST_PER_IMAGE}*.\n\nUse /buy to get more or /subscribe for unlimited access.`, { parse_mode: "Markdown" });
+    return ctx.reply(`❌ Not enough credits!\n\nYou have *${userData.credits}* but need *${COST_PER_IMAGE}*.\n\nUse /buy to get more.`, { parse_mode: "Markdown" });
   }
 
   const thinkingMsg = await ctx.reply("🎨 Generating your image... please wait ~20 seconds");
@@ -136,7 +150,7 @@ bot.command("generate", async (ctx) => {
       { input: { prompt, num_outputs: 1, width: 1152, height: 2048 } }
     );
 
-    const imageUrl = typeof output === 'string' ? output : (output[0]?.url ? output[0].url() : output[0]);
+    const imageUrl = getUrl(output);
     await logGeneration(ctx.from.id.toString(), prompt, imageUrl);
     try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
 
@@ -148,12 +162,12 @@ bot.command("generate", async (ctx) => {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Generate Another", "generate_help")],
-          [Markup.button.callback("✏️ Edit This Style", "edit_help")],
-          [Markup.button.callback("👥 Refer Friends", "show_referral")],
+          [Markup.button.callback("🎬 Turn into Video", "video_help")],
+          [Markup.button.callback("✏️ Edit This", "edit_help")],
         ]),
       }
     );
-    autoDeleteMessage(ctx, photoMsg.message_id);
+    autoDelete(ctx, photoMsg.message_id);
 
   } catch (err) {
     console.error(err);
@@ -166,30 +180,101 @@ bot.command("generate", async (ctx) => {
   }
 });
 
+// ── /video ────────────────────────────────────────────────────
+bot.command("video", async (ctx) => {
+  const prompt = ctx.message.text.replace("/video", "").trim();
+
+  if (!prompt) {
+    return ctx.reply(
+      `🎬 *Generate a Video*\n\nCosts *${COST_PER_VIDEO} credits*.\n\n` +
+      `*Text-to-video:* \`/video your prompt here\`\n\n` +
+      `*Image-to-video:* Send any photo and choose "Animate into Video"\n\n` +
+      `*Example prompts:*\n` +
+      `• \`/video a cinematic shot of waves crashing on a beach at sunset\`\n` +
+      `• \`/video a woman walking through a neon lit city at night\`\n` +
+      `• \`/video slow motion fire explosion in a dark room\`\n\n` +
+      `⏱ Videos take ~2-3 minutes to generate.\n` +
+      `📹 Output: 1080p, up to 10 seconds`,
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  const userData = await getCredits(ctx.from.id.toString());
+  if (!userData) return ctx.reply("Use /start first.");
+
+  const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
+  if (!isSub && userData.credits < COST_PER_VIDEO) {
+    return ctx.reply(`❌ Not enough credits!\n\nVideo generation costs *${COST_PER_VIDEO} credits*. You have *${userData.credits}*.\n\nUse /buy to get more.`, { parse_mode: "Markdown" });
+  }
+
+  const thinkingMsg = await ctx.reply("🎬 Generating your video... this takes ~2-3 minutes ☕");
+
+  try {
+    if (!isSub) await deductCredits(ctx.from.id.toString(), COST_PER_VIDEO);
+
+    const output = await replicate.run(
+      "kwaivgi/kling-v2.1",
+      {
+        input: {
+          prompt,
+          duration: 10,
+          aspect_ratio: "9:16",
+          mode: "pro",
+        }
+      }
+    );
+
+    const videoUrl = getUrl(output);
+    await logGeneration(ctx.from.id.toString(), `[VIDEO] ${prompt}`, videoUrl);
+    try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+
+    const newCredits = isSub ? userData.credits : userData.credits - COST_PER_VIDEO;
+    const videoMsg = await ctx.replyWithVideo(
+      { url: videoUrl },
+      {
+        caption: `🎬 *Video Done!*\n\n📝 _${prompt}_\n` + (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`) + `\n⏱ _Deletes in 1 hour_`,
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Generate Another Video", "video_help")],
+          [Markup.button.callback("🎨 Generate Image", "generate_help")],
+          [Markup.button.callback("👥 Refer Friends", "show_referral")],
+        ]),
+      }
+    );
+    autoDelete(ctx, videoMsg.message_id);
+
+  } catch (err) {
+    console.error(err);
+    if (!isSub) {
+      const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", ctx.from.id.toString()).single();
+      await supabase.from("users").update({ credits: u.credits + COST_PER_VIDEO }).eq("telegram_id", ctx.from.id.toString());
+    }
+    try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+    ctx.reply("❌ Video generation failed. Credits refunded. Try again!");
+  }
+});
+
 // ── /edit ─────────────────────────────────────────────────────
 bot.command("edit", async (ctx) => {
   await ctx.reply(
-    `✏️ *Edit Your Image*\n\n` +
-    `Costs *${COST_PER_EDIT} credits* per edit.\n\n` +
-    `*How to use:*\n` +
-    `1. Send me your image\n` +
-    `2. I'll ask what you want to do with it\n` +
-    `3. Describe the edit and I'll apply it\n\n` +
-    `*Example edits:*\n` +
-    `• "make this look cinematic"\n` +
-    `• "change background to a beach sunset"\n` +
-    `• "make it look like an oil painting"\n` +
-    `• "add neon lights to the scene"\n` +
-    `• "make it anime style"\n\n` +
-    `📸 *Send your image now!*`,
+    `✏️ *Edit Your Image*\n\nCosts *${COST_PER_EDIT} credits* per edit.\n\n` +
+    `*How to use:*\n1. Send me your image\n2. Tell me what to change\n\n` +
+    `*Examples:*\n• make this cinematic\n• change background to a beach\n• make it anime style\n• add neon lights\n• oil painting style\n\n📸 *Send your image now!*`,
     { parse_mode: "Markdown" }
   );
 });
 
 bot.action("edit_help", async (ctx) => {
   await ctx.answerCbQuery();
+  await ctx.reply(`✏️ *Edit Your Image*\n\nCosts *${COST_PER_EDIT} credits*.\n\nJust send me any photo and I'll ask what to change!`, { parse_mode: "Markdown" });
+});
+
+bot.action("video_help", async (ctx) => {
+  await ctx.answerCbQuery();
   await ctx.reply(
-    `✏️ *Edit Your Image*\n\nCosts *${COST_PER_EDIT} credits* per edit.\n\nJust send me any photo and I'll ask what you want to change!`,
+    `🎬 *Generate a Video*\n\nCosts *${COST_PER_VIDEO} credits*.\n\n` +
+    `*Text-to-video:*\n\`/video a cinematic sunset over miami beach\`\n\n` +
+    `*Image-to-video:*\nSend any photo and I'll animate it into a video!`,
     { parse_mode: "Markdown" }
   );
 });
@@ -198,98 +283,189 @@ bot.action("edit_help", async (ctx) => {
 bot.on("photo", async (ctx) => {
   const telegramId = ctx.from.id.toString();
   const userData = await getCredits(telegramId);
-
   if (!userData) return ctx.reply("Use /start first.");
-
-  const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
-  if (!isSub && userData.credits < COST_PER_EDIT) {
-    return ctx.reply(
-      `❌ Not enough credits!\n\nEditing costs *${COST_PER_EDIT} credits*. You have *${userData.credits}*.\n\nUse /buy to get more.`,
-      { parse_mode: "Markdown" }
-    );
-  }
 
   const photos = ctx.message.photo;
   const photo = photos[photos.length - 1];
   const fileId = photo.file_id;
 
+  // Store file ID — ask what they want to do
+  await ctx.reply(
+    `📸 *Image received!*\n\nWhat do you want to do with it?`,
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback(`✏️ Edit it (${COST_PER_EDIT} credits)`, `photo_edit_${fileId}`)],
+        [Markup.button.callback(`🎬 Animate into video (${COST_PER_VIDEO} credits)`, `photo_video_${fileId}`)],
+      ])
+    }
+  );
+});
+
+// Handle edit choice
+bot.action(/^photo_edit_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const fileId = ctx.match[1];
+  const telegramId = ctx.from.id.toString();
+
+  const userData = await getCredits(telegramId);
+  const isSub = userData?.subscription_active && new Date(userData.subscription_expires_at) > new Date();
+  if (!isSub && (!userData || userData.credits < COST_PER_EDIT)) {
+    return ctx.reply(`❌ Not enough credits! You need *${COST_PER_EDIT}* credits.`, { parse_mode: "Markdown" });
+  }
+
   pendingEdits.set(telegramId, { fileId, timestamp: Date.now() });
   setTimeout(() => pendingEdits.delete(telegramId), 10 * 60 * 1000);
 
   await ctx.reply(
-    `📸 *Image received!*\n\nNow tell me what you want to do with it.\n\n*Examples:*\n• make this cinematic\n• change background to a beach\n• make it anime style\n• add neon lights\n• make it look like an oil painting\n• portrait photo enhancement\n\nWhat should I do? ✏️`,
+    `✏️ What should I do to this image?\n\n*Examples:*\n• make this cinematic\n• change background to a beach\n• make it anime style\n• add neon lights\n• oil painting style`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ── HANDLE TEXT (for edit prompts) ────────────────────────────
-bot.on("text", async (ctx) => {
+// Handle video animation choice
+bot.action(/^photo_video_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const fileId = ctx.match[1];
   const telegramId = ctx.from.id.toString();
-  if (!pendingEdits.has(telegramId)) return;
-
-  const { fileId } = pendingEdits.get(telegramId);
-  const editPrompt = ctx.message.text;
-  pendingEdits.delete(telegramId);
 
   const userData = await getCredits(telegramId);
-  if (!userData) return ctx.reply("Use /start first.");
-
-  const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
-  if (!isSub && userData.credits < COST_PER_EDIT) {
-    return ctx.reply(`❌ Not enough credits! You need *${COST_PER_EDIT}* credits.`, { parse_mode: "Markdown" });
+  const isSub = userData?.subscription_active && new Date(userData.subscription_expires_at) > new Date();
+  if (!isSub && (!userData || userData.credits < COST_PER_VIDEO)) {
+    return ctx.reply(`❌ Not enough credits! Video animation costs *${COST_PER_VIDEO}* credits.`, { parse_mode: "Markdown" });
   }
 
-  const thinkingMsg = await ctx.reply("✏️ Editing your image... please wait ~30 seconds");
+  pendingVideos.set(telegramId, { fileId, timestamp: Date.now() });
+  setTimeout(() => pendingVideos.delete(telegramId), 10 * 60 * 1000);
 
-  try {
-    if (!isSub) await deductCredits(telegramId, COST_PER_EDIT);
+  await ctx.reply(
+    `🎬 How should I animate this image?\n\n*Examples:*\n• slow cinematic zoom in\n• the person starts walking\n• waves moving in the background\n• camera slowly pans right\n• wind blowing through the scene`,
+    { parse_mode: "Markdown" }
+  );
+});
 
-    const fileLink = await ctx.telegram.getFileLink(fileId);
-    const imageUrl = fileLink.href;
+// ── HANDLE TEXT (edit & video prompts) ───────────────────────
+bot.on("text", async (ctx) => {
+  const telegramId = ctx.from.id.toString();
 
-    const output = await replicate.run(
-      "black-forest-labs/flux-kontext-pro",
-      {
-        input: {
-          prompt: editPrompt,
-          input_image: imageUrl,
-          output_format: "jpg",
-          output_quality: 100,
-          safety_tolerance: 6,
-        }
-      }
-    );
+  // Handle edit prompt
+  if (pendingEdits.has(telegramId)) {
+    const { fileId } = pendingEdits.get(telegramId);
+    const editPrompt = ctx.message.text;
+    pendingEdits.delete(telegramId);
 
-    const resultUrl = typeof output === 'string' ? output : (output[0]?.url ? output[0].url() : output[0]);
-    await logGeneration(telegramId, `[EDIT] ${editPrompt}`, resultUrl);
-    try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
-
-    const newCredits = isSub ? userData.credits : userData.credits - COST_PER_EDIT;
-    const photoMsg = await ctx.replyWithPhoto(
-      { url: resultUrl },
-      {
-        caption:
-          `✅ *Edit Done!*\n\n✏️ _${editPrompt}_\n` +
-          (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`) +
-          `\n⏱ _Deletes in 1 hour_`,
-        parse_mode: "Markdown",
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback("✏️ Edit Again", "edit_help")],
-          [Markup.button.callback("🎨 Generate New", "generate_help")],
-          [Markup.button.callback("👥 Refer Friends", "show_referral")],
-        ]),
-      }
-    );
-    autoDeleteMessage(ctx, photoMsg.message_id);
-
-  } catch (err) {
-    console.error(err);
-    if (!isSub) {
-      const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", telegramId).single();
-      await supabase.from("users").update({ credits: u.credits + COST_PER_EDIT }).eq("telegram_id", telegramId);
+    const userData = await getCredits(telegramId);
+    if (!userData) return ctx.reply("Use /start first.");
+    const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
+    if (!isSub && userData.credits < COST_PER_EDIT) {
+      return ctx.reply(`❌ Not enough credits! You need *${COST_PER_EDIT}* credits.`, { parse_mode: "Markdown" });
     }
-    try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
-    ctx.reply("❌ Edit failed. Credits refunded. Try again!");
+
+    const thinkingMsg = await ctx.reply("✏️ Editing your image... ~30 seconds");
+
+    try {
+      if (!isSub) await deductCredits(telegramId, COST_PER_EDIT);
+      const fileLink = await ctx.telegram.getFileLink(fileId);
+      const imageUrl = fileLink.href;
+
+      const output = await replicate.run(
+        "black-forest-labs/flux-kontext-pro",
+        { input: { prompt: editPrompt, input_image: imageUrl, output_format: "jpg", output_quality: 100, safety_tolerance: 6 } }
+      );
+
+      const resultUrl = getUrl(output);
+      await logGeneration(telegramId, `[EDIT] ${editPrompt}`, resultUrl);
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+
+      const newCredits = isSub ? userData.credits : userData.credits - COST_PER_EDIT;
+      const photoMsg = await ctx.replyWithPhoto(
+        { url: resultUrl },
+        {
+          caption: `✅ *Edit Done!*\n\n✏️ _${editPrompt}_\n` + (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`) + `\n⏱ _Deletes in 1 hour_`,
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("✏️ Edit Again", "edit_help")],
+            [Markup.button.callback("🎬 Turn into Video", "video_help")],
+            [Markup.button.callback("👥 Refer Friends", "show_referral")],
+          ]),
+        }
+      );
+      autoDelete(ctx, photoMsg.message_id);
+
+    } catch (err) {
+      console.error(err);
+      if (!isSub) {
+        const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", telegramId).single();
+        await supabase.from("users").update({ credits: u.credits + COST_PER_EDIT }).eq("telegram_id", telegramId);
+      }
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+      ctx.reply("❌ Edit failed. Credits refunded. Try again!");
+    }
+    return;
+  }
+
+  // Handle image-to-video prompt
+  if (pendingVideos.has(telegramId)) {
+    const { fileId } = pendingVideos.get(telegramId);
+    const videoPrompt = ctx.message.text;
+    pendingVideos.delete(telegramId);
+
+    const userData = await getCredits(telegramId);
+    if (!userData) return ctx.reply("Use /start first.");
+    const isSub = userData.subscription_active && new Date(userData.subscription_expires_at) > new Date();
+    if (!isSub && userData.credits < COST_PER_VIDEO) {
+      return ctx.reply(`❌ Not enough credits! You need *${COST_PER_VIDEO}* credits.`, { parse_mode: "Markdown" });
+    }
+
+    const thinkingMsg = await ctx.reply("🎬 Animating your image into a video... ~2-3 minutes ☕");
+
+    try {
+      if (!isSub) await deductCredits(telegramId, COST_PER_VIDEO);
+      const fileLink = await ctx.telegram.getFileLink(fileId);
+      const imageUrl = fileLink.href;
+
+      const output = await replicate.run(
+        "kwaivgi/kling-v2.1-i2v",
+        {
+          input: {
+            prompt: videoPrompt,
+            image: imageUrl,
+            duration: 10,
+            aspect_ratio: "9:16",
+            mode: "pro",
+          }
+        }
+      );
+
+      const videoUrl = getUrl(output);
+      await logGeneration(telegramId, `[I2V] ${videoPrompt}`, videoUrl);
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+
+      const newCredits = isSub ? userData.credits : userData.credits - COST_PER_VIDEO;
+      const videoMsg = await ctx.replyWithVideo(
+        { url: videoUrl },
+        {
+          caption: `🎬 *Video Done!*\n\n📝 _${videoPrompt}_\n` + (isSub ? `⭐ Unlimited subscriber\n` : `💳 Credits left: *${newCredits}*\n`) + `\n⏱ _Deletes in 1 hour_`,
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback("🔄 Generate Another", "video_help")],
+            [Markup.button.callback("🎨 Generate Image", "generate_help")],
+            [Markup.button.callback("👥 Refer Friends", "show_referral")],
+          ]),
+        }
+      );
+      autoDelete(ctx, videoMsg.message_id);
+
+    } catch (err) {
+      console.error(err);
+      if (!isSub) {
+        const { data: u } = await supabase.from("users").select("credits").eq("telegram_id", telegramId).single();
+        await supabase.from("users").update({ credits: u.credits + COST_PER_VIDEO }).eq("telegram_id", telegramId);
+      }
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+      ctx.reply("❌ Video generation failed. Credits refunded. Try again!");
+    }
+    return;
   }
 });
 
@@ -303,9 +479,9 @@ async function showReferral(ctx) {
   const botUsername = ctx.botInfo.username;
   const referralLink = `https://t.me/${botUsername}?start=ref_${telegramId}`;
   await ctx.reply(
-    `👥 *Your Referral Link*\n\nShare this link and earn *${REFERRAL_REWARD} credits* for every person who joins!\n\n🔗 \`${referralLink}\`\n\n📊 *Your Stats*\n• Total referrals: *${user?.referral_count || 0}*\n• Credits earned: *${user?.referral_credits_earned || 0}*\n\nNew users also get *+${REFERRAL_BONUS} bonus credits*!`,
+    `👥 *Your Referral Link*\n\nEarn *${REFERRAL_REWARD} credits* for every person who joins!\n\n🔗 \`${referralLink}\`\n\n📊 *Stats*\n• Referrals: *${user?.referral_count || 0}*\n• Credits earned: *${user?.referral_credits_earned || 0}*`,
     { parse_mode: "Markdown", ...Markup.inlineKeyboard([
-      [Markup.button.url("📤 Share Link", `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent("Join this AI image generator bot and get free credits!")}`)]
+      [Markup.button.url("📤 Share", `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent("Join this AI image & video generator bot and get free credits!")}`)]
     ])}
   );
 }
@@ -354,10 +530,15 @@ bot.command("subscribe", async (ctx) => { await showSubscribeMenu(ctx); });
 bot.action("subscribe_menu", async (ctx) => { await ctx.answerCbQuery(); await showSubscribeMenu(ctx); });
 
 async function showSubscribeMenu(ctx) {
-  await ctx.reply("⭐ *Monthly Subscription*\n\nUnlimited generations AND edits for one flat fee.\n\n• Unlimited generations\n• Unlimited image edits\n• Cancel anytime\n\n*$14.99 / month*", {
-    parse_mode: "Markdown",
-    ...Markup.inlineKeyboard([[Markup.button.callback("⭐ Subscribe Now — $14.99/mo", "start_subscribe")]])
-  });
+  await ctx.reply(
+    "⭐ *Monthly Subscription*\n\n" +
+    "Unlimited images, edits AND videos for one flat fee.\n\n" +
+    "• Unlimited image generation\n• Unlimited image editing\n• Unlimited video generation\n• Cancel anytime\n\n*$14.99 / month*",
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([[Markup.button.callback("⭐ Subscribe Now — $14.99/mo", "start_subscribe")]])
+    }
+  );
 }
 
 bot.action("start_subscribe", async (ctx) => {
@@ -388,8 +569,9 @@ bot.command("help", async (ctx) => {
   ctx.reply(
     "📖 *Commands*\n\n" +
     "/start — Welcome\n" +
-    "/generate [prompt] — Generate image (5 credits)\n" +
-    "/edit — Upload & edit your image (10 credits)\n" +
+    `/generate [prompt] — Generate image (${COST_PER_IMAGE} credits)\n` +
+    `/edit — Upload & edit your image (${COST_PER_EDIT} credits)\n` +
+    `/video [prompt] — Generate video (${COST_PER_VIDEO} credits)\n` +
     "/balance — Check credits\n" +
     "/referral — Invite friends & earn\n" +
     "/buy — Purchase credits\n" +
