@@ -377,7 +377,7 @@ bot.on("text", async (ctx) => {
 
       const output = await replicate.run(
         "black-forest-labs/flux-kontext-pro",
-        { input: { prompt: editPrompt, input_image: imageUrl, output_format: "jpg", output_quality: 100, safety_tolerance: 6 } }
+        { input: { prompt: editPrompt, input_start_image: imageUrl, output_format: "jpg", output_quality: 100, safety_tolerance: 6 } }
       );
 
       const resultUrl = getUrl(output);
@@ -432,7 +432,7 @@ bot.on("text", async (ctx) => {
 
       const output = await replicate.run(
         "kwaivgi/kling-v2.1",
-        { input: { prompt: videoPrompt, image: imageUrl, duration: 10, aspect_ratio: "9:16", mode: "pro" } }
+        { input: { prompt: videoPrompt, start_image: imageUrl, duration: 10, aspect_ratio: "9:16", mode: "pro" } }
       );
 
       const videoUrl = getUrl(output);
