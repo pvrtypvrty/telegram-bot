@@ -130,7 +130,7 @@ bot.command("generate", async (ctx) => {
       { input: { prompt, num_outputs: 1, width: 1152, height: 2048 } }
     );
 
-    const imageUrl = output[0];
+    const imageUrl = typeof output === 'string' ? output : (output[0]?.url ? output[0].url() : output[0]);
     await logGeneration(ctx.from.id.toString(), prompt, imageUrl);
     try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
 
