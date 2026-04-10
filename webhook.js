@@ -82,6 +82,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
 });
 
 app.use(express.json());
+app.get("/logo", (req, res) => res.sendFile(__dirname + "/logo.png"));
 
 app.get("/payment-success", (req, res) => {
   res.send(`
