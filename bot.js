@@ -1,5 +1,5 @@
 // ============================================================
-// TELEGRAM IMAGE BOT — FINAL VERSION
+// PvrtyXbot — FINAL VERSION
 // ============================================================
 require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
@@ -18,6 +18,56 @@ const COST_PER_VIDEO = 50;
 const REFERRAL_REWARD = 10;
 const REFERRAL_BONUS = 5;
 const ADMIN_ID = "1924511933";
+const BOT_NAME = "PvrtyXbot";
+const WELCOME_IMAGE = "https://i.imgur.com/placeholder.jpg"; // will be set via bot photo
+
+const TERMS_TEXT = `━━━━━━━━━━━━━━━━━━━━
+*${BOT_NAME} — TERMS OF SERVICE*
+
+*1. AGE REQUIREMENT*
+You must be at least 18 years old to use this service. By using this bot, you confirm that you are of legal age in your jurisdiction.
+
+*2. CONTENT RESPONSIBILITY*
+You are solely responsible for images you upload and generate. You confirm that:
+• You own or have authorization to use any image you upload
+• You will NOT upload images of real people without their explicit consent
+• You will NOT upload images of minors under any circumstances
+• You will NOT use this service for revenge porn or non-consensual content
+• You will NOT upload images of public figures or celebrities
+
+*3. PROHIBITED CONTENT*
+The following is strictly prohibited and will result in immediate termination without refund:
+• Images depicting or involving minors
+• Non-consensual intimate imagery
+• Content involving real people without consent
+• Images of public figures or celebrities
+• Content promoting violence, hatred, or illegal activities
+
+*4. AI-GENERATED CONTENT*
+All images are AI-generated. You acknowledge that:
+• Generated images are synthetic and do not depict real events
+• You will not misrepresent AI-generated content as real photographs
+• You are responsible for how you use and distribute generated content
+
+*5. DATA & PRIVACY*
+• Images are stored on encrypted servers for maximum 7 days then auto-deleted
+• We do not share or sell your images to third parties
+• Your Telegram ID and username are stored for account management only
+
+*6. CREDITS, PAYMENTS & REFUNDS*
+• All purchases are final and non-refundable
+• Credits do not expire
+• Failed generations due to technical errors are automatically refunded
+• We reserve the right to modify pricing with prior notice
+
+*7. ACCOUNT TERMINATION*
+We reserve the right to ban accounts that violate these Terms. Banned accounts forfeit all remaining credits without refund.
+
+*8. LIMITATION OF LIABILITY*
+${BOT_NAME} and its operators are not liable for any damages arising from use of this service. You use this service at your own risk.
+
+━━━━━━━━━━━━━━━━━━━━
+By clicking *I Agree*, you confirm you have read and agree to these Terms of Service.`;
 
 const pendingPhotos = new Map();
 const pendingEdits = new Map();
@@ -29,7 +79,7 @@ async function getOrCreateUser(telegramId, username, referredBy = null) {
   if (existing) return existing;
   const startCredits = referredBy ? 10 + REFERRAL_BONUS : 10;
   const { data: newUser } = await supabase.from("users")
-    .insert({ telegram_id: telegramId, username, credits: startCredits, referred_by: referredBy || null })
+    .insert({ telegram_id: telegramId, username, credits: startCredits, referred_by: referredBy || null, terms_accepted: false })
     .select().single();
   if (referredBy) {
     const { data: referrer } = await supabase.from("users")
@@ -48,7 +98,7 @@ async function getOrCreateUser(telegramId, username, referredBy = null) {
 
 async function getCredits(telegramId) {
   const { data } = await supabase.from("users")
-    .select("credits, subscription_active, subscription_expires_at").eq("telegram_id", telegramId).single();
+    .select("credits, subscription_active, subscription_expires_at, terms_accepted").eq("telegram_id", telegramId).single();
   return data;
 }
 
@@ -89,6 +139,15 @@ function isSub(userData) {
   return userData?.subscription_active && new Date(userData.subscription_expires_at) > new Date();
 }
 
+async function requireTerms(ctx) {
+  const userData = await getCredits(ctx.from.id.toString());
+  if (!userData || !userData.terms_accepted) {
+    await showTerms(ctx);
+    return false;
+  }
+  return true;
+}
+
 // ── CLAUDE PROMPT ENHANCER ────────────────────────────────────
 async function enhancePrompt(userPrompt, type = "image") {
   try {
@@ -114,86 +173,38 @@ async function enhancePrompt(userPrompt, type = "image") {
     return data.content?.[0]?.text?.trim() || userPrompt;
   } catch(e) {
     console.error("Prompt enhance error:", e.message);
-    return userPrompt; // fallback to original
+    return userPrompt;
   }
 }
 
-// ── PARSE JSON OR TEXT PROMPT ─────────────────────────────────
 function parsePrompt(input) {
   try {
-    // Try to parse as JSON
     const cleaned = input.trim().replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
     const parsed = JSON.parse(cleaned);
-    // Support common JSON prompt formats
     return parsed.prompt || parsed.description || parsed.text || parsed.content || input;
   } catch(e) {
-    return input; // plain text prompt
+    return input;
   }
 }
 
-// ── VIDEO GENERATION (non-blocking) ──────────────────────────
-async function generateVideo(chatId, telegramId, prompt, startImageUrl, subActive, creditsLeft) {
-  try {
-    const input = {
-      prompt,
-      duration: 10,
-      aspect_ratio: "9:16",
-      mode: "pro",
-    };
-    if (startImageUrl) input.start_image = startImageUrl;
-
-    const prediction = await replicate.predictions.create({
-      model: "kwaivgi/kling-v2.1",
-      input
-    });
-
-    let result = prediction;
-    let attempts = 0;
-    while (result.status !== "succeeded" && result.status !== "failed" && result.status !== "canceled") {
-      await new Promise(r => setTimeout(r, 10000));
-      result = await replicate.predictions.get(prediction.id);
-      attempts++;
-      if (attempts > 60) throw new Error("Timed out after 10 minutes");
-    }
-
-    if (result.status !== "succeeded") throw new Error("Video failed: " + result.status);
-
-    const videoUrl = getUrl(result.output);
-    if (!videoUrl) throw new Error("No video URL returned");
-
-    await logGeneration(telegramId, `[VIDEO] ${prompt}`, videoUrl);
-
-    const msg = await bot.telegram.sendVideo(chatId, { url: videoUrl }, {
-      caption: `🎬 *Video Done!*\n\n📝 _${prompt.substring(0, 100)}..._\n` +
-        (subActive ? `⭐ Unlimited\n` : `💳 Credits left: *${creditsLeft}*\n`) +
-        `\n⏱ _Deletes in 1 hour_`,
-      parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: [
-        [{ text: "🔄 Another Video", callback_data: "video_help" },
-         { text: "🎨 Generate Image", callback_data: "generate_help" }]
-      ]}
-    });
-    autoDelete(chatId, msg.message_id);
-
-  } catch (err) {
-    console.error("Video error:", err.message);
-    if (!subActive) await refundCredits(telegramId, COST_PER_VIDEO);
-    try { await bot.telegram.sendMessage(chatId, "❌ Video failed. Credits refunded. Try again!"); } catch(e) {}
-  }
-}
-
-// ── /start ────────────────────────────────────────────────────
-bot.start(async (ctx) => {
-  const payload = ctx.startPayload;
-  let referredBy = null;
-  if (payload && payload.startsWith("ref_")) {
-    referredBy = payload.replace("ref_", "");
-    if (referredBy === ctx.from.id.toString()) referredBy = null;
-  }
-  const user = await getOrCreateUser(ctx.from.id.toString(), ctx.from.username || ctx.from.first_name, referredBy);
-  const welcomeExtra = referredBy ? `\n🎁 Referral bonus: *+${REFERRAL_BONUS} credits*!\n` : "";
+// ── SHOW TERMS ────────────────────────────────────────────────
+async function showTerms(ctx) {
   await ctx.reply(
-    `✨ *Welcome to ImageBot!*\n\n` + welcomeExtra +
+    `👋 *Welcome to ${BOT_NAME}!*\n\nPlease read and accept our Terms & Conditions to continue:\n\n${TERMS_TEXT}`,
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("✅ I Agree", "terms_agree")],
+        [Markup.button.callback("❌ I Decline", "terms_decline")],
+      ])
+    }
+  );
+}
+
+// ── SHOW MAIN MENU ────────────────────────────────────────────
+async function showMainMenu(ctx, user) {
+  const welcomeText =
+    `✨ *Welcome to ${BOT_NAME}!*\n\n` +
     `You have *${user.credits} credits* to start.\n\n` +
     `🎨 Generate image — ${COST_PER_IMAGE} credits\n` +
     `✏️ Edit image — ${COST_PER_EDIT} credits\n` +
@@ -205,16 +216,80 @@ bot.start(async (ctx) => {
     `/subscribe — Unlimited monthly\n` +
     `/referral — Earn free credits\n` +
     `/balance — Check credits\n\n` +
-    `💡 _Tip: You can use plain text or JSON prompts!_`,
-    { parse_mode: "Markdown", ...Markup.inlineKeyboard([
-      [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
-      [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
-    ])}
+    `💡 _Supports plain text & JSON prompts_`;
+
+  try {
+    // Try to send with the PvrtyXbot logo
+    await ctx.replyWithPhoto(
+      { url: "https://imgur.com/a/qFXlIst" }, // placeholder - replace with actual image URL
+      {
+        caption: welcomeText,
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
+          [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
+        ])
+      }
+    );
+  } catch(e) {
+    // Fallback to text only if image fails
+    await ctx.reply(welcomeText, {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
+        [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
+      ])
+    });
+  }
+}
+
+// ── TERMS ACTIONS ─────────────────────────────────────────────
+bot.action("terms_agree", async (ctx) => {
+  await ctx.answerCbQuery("✅ Terms accepted!");
+  const telegramId = ctx.from.id.toString();
+  await supabase.from("users").update({
+    terms_accepted: true,
+    terms_accepted_at: new Date().toISOString()
+  }).eq("telegram_id", telegramId);
+
+  const userData = await getCredits(telegramId);
+  await ctx.reply(`✅ *Terms accepted!* Welcome to ${BOT_NAME}! 🎉`, { parse_mode: "Markdown" });
+  await showMainMenu(ctx, userData);
+});
+
+bot.action("terms_decline", async (ctx) => {
+  await ctx.answerCbQuery("❌ Terms declined");
+  await ctx.reply(
+    `❌ *Terms Declined*\n\nYou must accept the Terms of Service to use ${BOT_NAME}.\n\nIf you change your mind, use /start to try again.`,
+    { parse_mode: "Markdown" }
   );
+});
+
+// ── /start ────────────────────────────────────────────────────
+bot.start(async (ctx) => {
+  const payload = ctx.startPayload;
+  let referredBy = null;
+  if (payload && payload.startsWith("ref_")) {
+    referredBy = payload.replace("ref_", "");
+    if (referredBy === ctx.from.id.toString()) referredBy = null;
+  }
+  const user = await getOrCreateUser(ctx.from.id.toString(), ctx.from.username || ctx.from.first_name, referredBy);
+
+  if (referredBy && user.credits === 10 + REFERRAL_BONUS) {
+    // New user via referral - show terms first
+  }
+
+  if (!user.terms_accepted) {
+    await showTerms(ctx);
+    return;
+  }
+
+  await showMainMenu(ctx, user);
 });
 
 // ── /balance ──────────────────────────────────────────────────
 bot.command("balance", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
   const data = await getCredits(ctx.from.id.toString());
   if (!data) return ctx.reply("Use /start first.");
   const subStatus = isSub(data)
@@ -229,34 +304,25 @@ bot.command("balance", async (ctx) => {
 
 // ── /generate ─────────────────────────────────────────────────
 bot.command("generate", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
   const rawInput = ctx.message.text.replace("/generate", "").trim();
   if (!rawInput) return ctx.reply(
-    "Provide a prompt!\n\nExamples:\n`/generate a futuristic city at night`\n\nOr JSON:\n`/generate {\"prompt\": \"cinematic portrait\", \"style\": \"neon\"}`",
+    "Provide a prompt!\n\nExample:\n`/generate a futuristic city at night`",
     { parse_mode: "Markdown" }
   );
-
   const userData = await getCredits(ctx.from.id.toString());
   if (!userData) return ctx.reply("Use /start first.");
   const sub = isSub(userData);
   if (!sub && userData.credits < COST_PER_IMAGE) return ctx.reply(`❌ Need *${COST_PER_IMAGE}* credits. You have *${userData.credits}*. Use /buy.`, { parse_mode: "Markdown" });
 
-  const thinkingMsg = await ctx.reply("✨ Enhancing your prompt with AI... then generating!");
-
+  const thinkingMsg = await ctx.reply("✨ Enhancing your prompt with AI...");
   try {
     if (!sub) await deductCredits(ctx.from.id.toString(), COST_PER_IMAGE);
-
-    // Parse JSON or text prompt
     const basePrompt = parsePrompt(rawInput);
-
-    // Enhance with Claude
     const enhancedPrompt = await enhancePrompt(basePrompt, "image");
 
     const output = await replicate.run("google/nano-banana-pro", {
-      input: {
-        prompt: enhancedPrompt,
-        aspect_ratio: "9:16",
-        output_format: "jpg",
-      }
+      input: { prompt: enhancedPrompt, aspect_ratio: "9:16", output_format: "jpg" }
     });
 
     const imageUrl = getUrl(output);
@@ -275,7 +341,6 @@ bot.command("generate", async (ctx) => {
       ]),
     });
     autoDelete(ctx.chat.id, msg.message_id);
-
   } catch (err) {
     console.error("Generate error:", err.message);
     if (!sub) await refundCredits(ctx.from.id.toString(), COST_PER_IMAGE);
@@ -286,40 +351,62 @@ bot.command("generate", async (ctx) => {
 
 // ── /video ────────────────────────────────────────────────────
 bot.command("video", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
   const rawInput = ctx.message.text.replace("/video", "").trim();
   if (!rawInput) return ctx.reply(
-    `🎬 *Generate a Video*\n\nCosts *${COST_PER_VIDEO} credits*.\n\n` +
-    `Usage: \`/video your prompt\`\n\nOr JSON: \`/video {"prompt": "waves at sunset", "style": "cinematic"}\`\n\n` +
-    `Or send any photo to animate it!\n\n⏱ ~3-5 min | 📹 1080p 10s`,
+    `🎬 *Generate a Video*\n\nCosts *${COST_PER_VIDEO} credits*.\n\nUsage: \`/video your prompt\`\n\nOr send any photo to animate it!\n\n⏱ ~3-5 min | 📹 1080p 10s`,
     { parse_mode: "Markdown" }
   );
-
   const userData = await getCredits(ctx.from.id.toString());
   if (!userData) return ctx.reply("Use /start first.");
   const sub = isSub(userData);
   if (!sub && userData.credits < COST_PER_VIDEO) return ctx.reply(`❌ Need *${COST_PER_VIDEO}* credits. You have *${userData.credits}*. Use /buy.`, { parse_mode: "Markdown" });
-
   if (!sub) await deductCredits(ctx.from.id.toString(), COST_PER_VIDEO);
   const newCredits = sub ? userData.credits : userData.credits - COST_PER_VIDEO;
-
   const basePrompt = parsePrompt(rawInput);
   const enhancedPrompt = await enhancePrompt(basePrompt, "video");
-
-  await ctx.reply(
-    `🎬 Generating your video...\n\n⏱ *3-5 minutes* — I'll send it when ready!\n\nFeel free to use other commands.`,
-    { parse_mode: "Markdown" }
-  );
+  await ctx.reply(`🎬 Generating your video...\n\n⏱ *3-5 minutes* — I'll send it when ready!`, { parse_mode: "Markdown" });
   generateVideo(ctx.chat.id, ctx.from.id.toString(), enhancedPrompt, null, sub, newCredits);
 });
 
+// ── VIDEO GENERATION (non-blocking) ──────────────────────────
+async function generateVideo(chatId, telegramId, prompt, startImageUrl, subActive, creditsLeft) {
+  try {
+    const input = { prompt, duration: 10, aspect_ratio: "9:16", mode: "pro" };
+    if (startImageUrl) input.start_image = startImageUrl;
+
+    const prediction = await replicate.predictions.create({ model: "kwaivgi/kling-v2.1", input });
+
+    let result = prediction;
+    let attempts = 0;
+    while (result.status !== "succeeded" && result.status !== "failed" && result.status !== "canceled") {
+      await new Promise(r => setTimeout(r, 10000));
+      result = await replicate.predictions.get(prediction.id);
+      if (++attempts > 60) throw new Error("Timed out");
+    }
+    if (result.status !== "succeeded") throw new Error("Video failed: " + result.status);
+
+    const videoUrl = getUrl(result.output);
+    if (!videoUrl) throw new Error("No video URL");
+
+    await logGeneration(telegramId, `[VIDEO] ${prompt}`, videoUrl);
+    const msg = await bot.telegram.sendVideo(chatId, { url: videoUrl }, {
+      caption: `🎬 *Video Done!*\n\n` + (subActive ? `⭐ Unlimited\n` : `💳 Credits left: *${creditsLeft}*\n`) + `\n⏱ _Deletes in 1 hour_`,
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: [[{ text: "🔄 Another Video", callback_data: "video_help" }, { text: "🎨 Generate Image", callback_data: "generate_help" }]] }
+    });
+    autoDelete(chatId, msg.message_id);
+  } catch (err) {
+    console.error("Video error:", err.message);
+    if (!subActive) await refundCredits(telegramId, COST_PER_VIDEO);
+    try { await bot.telegram.sendMessage(chatId, "❌ Video failed. Credits refunded. Try again!"); } catch(e) {}
+  }
+}
+
 // ── /edit ─────────────────────────────────────────────────────
 bot.command("edit", async (ctx) => {
-  ctx.reply(
-    `✏️ *Edit Your Image*\n\nCosts *${COST_PER_EDIT} credits*.\n\n` +
-    `Send me any photo and I'll ask what to change!\n\n` +
-    `Examples: make cinematic, change background, anime style, neon lights`,
-    { parse_mode: "Markdown" }
-  );
+  if (!await requireTerms(ctx)) return;
+  ctx.reply(`✏️ *Edit Your Image*\n\nCosts *${COST_PER_EDIT} credits*.\n\nSend me any photo and I'll ask what to change!`, { parse_mode: "Markdown" });
 });
 
 bot.action("edit_help", async (ctx) => { await ctx.answerCbQuery(); ctx.reply(`✏️ Send me any photo to edit! Costs *${COST_PER_EDIT} credits*.`, { parse_mode: "Markdown" }); });
@@ -328,9 +415,8 @@ bot.action("generate_help", async (ctx) => { await ctx.answerCbQuery(); ctx.repl
 
 // ── HANDLE PHOTO UPLOADS ──────────────────────────────────────
 bot.on("photo", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
   const telegramId = ctx.from.id.toString();
-  const userData = await getCredits(telegramId);
-  if (!userData) return ctx.reply("Use /start first.");
   const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
   pendingPhotos.set(telegramId, { fileId, timestamp: Date.now() });
   setTimeout(() => pendingPhotos.delete(telegramId), 10 * 60 * 1000);
@@ -354,7 +440,7 @@ bot.action("choose_edit", async (ctx) => {
   if (!sub && (!userData || userData.credits < COST_PER_EDIT)) return ctx.reply(`❌ Need *${COST_PER_EDIT}* credits.`, { parse_mode: "Markdown" });
   pendingEdits.set(telegramId, { fileId, timestamp: Date.now() });
   setTimeout(() => pendingEdits.delete(telegramId), 10 * 60 * 1000);
-  ctx.reply(`✏️ What should I do?\n\nExamples:\n• make this cinematic\n• change background to beach\n• anime style\n• add neon lights\n• oil painting`, { parse_mode: "Markdown" });
+  ctx.reply(`✏️ What should I do?\n\nExamples:\n• make this cinematic\n• change background to beach\n• anime style\n• add neon lights`, { parse_mode: "Markdown" });
 });
 
 bot.action("choose_video", async (ctx) => {
@@ -368,7 +454,7 @@ bot.action("choose_video", async (ctx) => {
   if (!sub && (!userData || userData.credits < COST_PER_VIDEO)) return ctx.reply(`❌ Need *${COST_PER_VIDEO}* credits.`, { parse_mode: "Markdown" });
   pendingVideos.set(telegramId, { fileId, timestamp: Date.now() });
   setTimeout(() => pendingVideos.delete(telegramId), 10 * 60 * 1000);
-  ctx.reply(`🎬 How should I animate this?\n\nExamples:\n• slow cinematic zoom in\n• person starts walking\n• waves moving in background\n• camera pans right\n• wind blowing through scene`, { parse_mode: "Markdown" });
+  ctx.reply(`🎬 How should I animate this?\n\nExamples:\n• slow cinematic zoom in\n• person starts walking\n• waves moving\n• camera pans right`, { parse_mode: "Markdown" });
 });
 
 // ── HANDLE TEXT ───────────────────────────────────────────────
@@ -395,9 +481,7 @@ bot.on("text", async (ctx) => {
       try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
       const newCredits = sub ? userData.credits : userData.credits - COST_PER_EDIT;
       const msg = await ctx.replyWithPhoto({ url: resultUrl }, {
-        caption: `✅ *Edit Done!*\n\n✏️ _${editPrompt.substring(0, 80)}_\n` +
-          (sub ? `⭐ Unlimited\n` : `💳 Credits left: *${newCredits}*\n`) +
-          `\n⏱ _Deletes in 1 hour_`,
+        caption: `✅ *Edit Done!*\n\n✏️ _${editPrompt.substring(0, 80)}_\n` + (sub ? `⭐ Unlimited\n` : `💳 Credits left: *${newCredits}*\n`) + `\n⏱ _Deletes in 1 hour_`,
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([[Markup.button.callback("✏️ Edit Again", "edit_help"), Markup.button.callback("🎬 Make Video", "video_help")]]),
       });
@@ -430,7 +514,10 @@ bot.on("text", async (ctx) => {
 });
 
 // ── /referral ─────────────────────────────────────────────────
-bot.command("referral", async (ctx) => { await showReferral(ctx); });
+bot.command("referral", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
+  await showReferral(ctx);
+});
 bot.action("show_referral", async (ctx) => { await ctx.answerCbQuery(); await showReferral(ctx); });
 async function showReferral(ctx) {
   const telegramId = ctx.from.id.toString();
@@ -439,12 +526,15 @@ async function showReferral(ctx) {
   const referralLink = `https://t.me/${botUsername}?start=ref_${telegramId}`;
   await ctx.reply(
     `👥 *Your Referral Link*\n\nEarn *${REFERRAL_REWARD} credits* per person!\n\n🔗 \`${referralLink}\`\n\n📊 Referrals: *${user?.referral_count || 0}* | Earned: *${user?.referral_credits_earned || 0}*`,
-    { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.url("📤 Share", `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent("Join this AI image & video bot — get free credits!")}`)]]) }
+    { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.url("📤 Share", `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent(`Join ${BOT_NAME} — AI image & video bot. Get free credits!`)}`)]])  }
   );
 }
 
 // ── /buy ──────────────────────────────────────────────────────
-bot.command("buy", async (ctx) => { await showBuyMenu(ctx); });
+bot.command("buy", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
+  await showBuyMenu(ctx);
+});
 bot.action("buy_menu", async (ctx) => { await ctx.answerCbQuery(); await showBuyMenu(ctx); });
 async function showBuyMenu(ctx) {
   await ctx.reply("💰 *Buy Credits*\n\nChoose a package:", {
@@ -479,7 +569,10 @@ async function showBuyMenu(ctx) {
 });
 
 // ── /subscribe ────────────────────────────────────────────────
-bot.command("subscribe", async (ctx) => { await showSubscribeMenu(ctx); });
+bot.command("subscribe", async (ctx) => {
+  if (!await requireTerms(ctx)) return;
+  await showSubscribeMenu(ctx);
+});
 bot.action("subscribe_menu", async (ctx) => { await ctx.answerCbQuery(); await showSubscribeMenu(ctx); });
 async function showSubscribeMenu(ctx) {
   await ctx.reply(
@@ -508,7 +601,7 @@ bot.action("start_subscribe", async (ctx) => {
 // ── /help ─────────────────────────────────────────────────────
 bot.command("help", async (ctx) => {
   ctx.reply(
-    `📖 *Commands*\n\n` +
+    `📖 *${BOT_NAME} Commands*\n\n` +
     `/generate [prompt] — Image (${COST_PER_IMAGE} cr)\n` +
     `/edit — Edit image (${COST_PER_EDIT} cr)\n` +
     `/video [prompt] — Video (${COST_PER_VIDEO} cr)\n` +
@@ -516,10 +609,14 @@ bot.command("help", async (ctx) => {
     `/referral — Earn free credits\n` +
     `/buy — Purchase credits\n` +
     `/subscribe — Unlimited monthly\n` +
-    `/help — This menu\n\n` +
-    `💡 _Supports plain text AND JSON prompts_`,
+    `/terms — View terms of service\n` +
+    `/help — This menu`,
     { parse_mode: "Markdown" }
   );
+});
+
+bot.command("terms", async (ctx) => {
+  await showTerms(ctx);
 });
 
 // ── ADMIN COMMANDS ────────────────────────────────────────────
@@ -530,10 +627,10 @@ bot.command("adminhelp", async (ctx) => {
     `/stats — Bot overview\n` +
     `/listusers — Recent 15 users\n` +
     `/user [id] — User details\n` +
-    `/addcredits [id] [amount] — Add credits\n` +
-    `/removecredits [id] [amount] — Remove credits\n` +
-    `/setcredits [id] [amount] — Set exact credits\n` +
-    `/broadcast [message] — Message all users`,
+    `/addcredits [id] [amount]\n` +
+    `/removecredits [id] [amount]\n` +
+    `/setcredits [id] [amount]\n` +
+    `/broadcast [message]`,
     { parse_mode: "Markdown" }
   );
 });
@@ -558,7 +655,7 @@ bot.command("stats", async (ctx) => {
     const today = new Date(); today.setHours(0,0,0,0);
     const { count: newToday } = await supabase.from("users").select("*", { count: "exact", head: true }).gte("created_at", today.toISOString());
     await ctx.reply(
-      `📊 *Bot Stats*\n\n` +
+      `📊 *${BOT_NAME} Stats*\n\n` +
       `👥 Total users: *${userCount || 0}* (+${newToday || 0} today)\n` +
       `🎨 Total generations: *${genCount || 0}*\n` +
       `💳 Total transactions: *${txnCount || 0}*\n` +
@@ -569,7 +666,7 @@ bot.command("stats", async (ctx) => {
     );
   } catch(err) {
     console.error("Stats error:", err);
-    ctx.reply("❌ Error fetching stats: " + err.message);
+    ctx.reply("❌ Stats error: " + err.message);
   }
 });
 
@@ -592,38 +689,32 @@ bot.command("removecredits", async (ctx) => {
   if (!isAdmin(ctx)) return;
   const parts = ctx.message.text.split(" ");
   if (parts.length !== 3) return ctx.reply("Usage: /removecredits [telegram_id] [amount]");
-  const targetId = parts[1];
-  const amount = parseInt(parts[2]);
+  const targetId = parts[1]; const amount = parseInt(parts[2]);
   if (isNaN(amount) || amount <= 0) return ctx.reply("❌ Invalid amount.");
   const { data: user } = await supabase.from("users").select("credits, username").eq("telegram_id", targetId).single();
   if (!user) return ctx.reply(`❌ User ${targetId} not found.`);
   const newBalance = Math.max(0, user.credits - amount);
   await supabase.from("users").update({ credits: newBalance }).eq("telegram_id", targetId);
-  ctx.reply(`✅ Removed *${amount}* credits from *${user.username || targetId}*\nNew balance: *${newBalance}*`, { parse_mode: "Markdown" });
+  ctx.reply(`✅ Removed *${amount}* from *${user.username || targetId}*. New balance: *${newBalance}*`, { parse_mode: "Markdown" });
 });
 
 bot.command("setcredits", async (ctx) => {
   if (!isAdmin(ctx)) return;
   const parts = ctx.message.text.split(" ");
   if (parts.length !== 3) return ctx.reply("Usage: /setcredits [telegram_id] [amount]");
-  const targetId = parts[1];
-  const amount = parseInt(parts[2]);
+  const targetId = parts[1]; const amount = parseInt(parts[2]);
   if (isNaN(amount) || amount < 0) return ctx.reply("❌ Invalid amount.");
   const { data: user } = await supabase.from("users").select("username").eq("telegram_id", targetId).single();
   if (!user) return ctx.reply(`❌ User ${targetId} not found.`);
   await supabase.from("users").update({ credits: amount }).eq("telegram_id", targetId);
-  ctx.reply(`✅ Set *${user.username || targetId}* credits to *${amount}*`, { parse_mode: "Markdown" });
+  ctx.reply(`✅ Set *${user.username || targetId}* to *${amount}* credits`, { parse_mode: "Markdown" });
 });
 
 bot.command("listusers", async (ctx) => {
   if (!isAdmin(ctx)) return;
-  const { data: users } = await supabase.from("users")
-    .select("telegram_id, username, credits, subscription_active, created_at")
-    .order("created_at", { ascending: false }).limit(15);
+  const { data: users } = await supabase.from("users").select("telegram_id, username, credits, subscription_active").order("created_at", { ascending: false }).limit(15);
   if (!users || users.length === 0) return ctx.reply("No users yet.");
-  const list = users.map(u =>
-    `• *${u.username || "unknown"}* (${u.telegram_id}) — ${u.credits} cr ${u.subscription_active ? "⭐" : ""}`
-  ).join("\n");
+  const list = users.map(u => `• *${u.username || "unknown"}* (${u.telegram_id}) — ${u.credits} cr ${u.subscription_active ? "⭐" : ""}`).join("\n");
   ctx.reply(`👥 *Recent Users*\n\n${list}`, { parse_mode: "Markdown" });
 });
 
@@ -631,18 +722,11 @@ bot.command("user", async (ctx) => {
   if (!isAdmin(ctx)) return;
   const parts = ctx.message.text.split(" ");
   if (parts.length !== 2) return ctx.reply("Usage: /user [telegram_id]");
-  const targetId = parts[1];
-  const { data: user } = await supabase.from("users").select("*").eq("telegram_id", targetId).single();
-  if (!user) return ctx.reply(`❌ User ${targetId} not found.`);
-  const { count: genCount } = await supabase.from("generations").select("*", { count: "exact", head: true }).eq("telegram_id", targetId);
+  const { data: user } = await supabase.from("users").select("*").eq("telegram_id", parts[1]).single();
+  if (!user) return ctx.reply(`❌ User not found.`);
+  const { count: genCount } = await supabase.from("generations").select("*", { count: "exact", head: true }).eq("telegram_id", parts[1]);
   ctx.reply(
-    `👤 *User Info*\n\n` +
-    `Username: *${user.username || "unknown"}*\n` +
-    `ID: \`${user.telegram_id}\`\n` +
-    `Credits: *${user.credits}*\n` +
-    `Subscriber: *${user.subscription_active ? "Yes ⭐" : "No"}*\n` +
-    `Generations: *${genCount || 0}*\n` +
-    `Joined: *${new Date(user.created_at).toLocaleDateString()}*`,
+    `👤 *User Info*\n\nUsername: *${user.username || "unknown"}*\nID: \`${user.telegram_id}\`\nCredits: *${user.credits}*\nSubscriber: *${user.subscription_active ? "Yes ⭐" : "No"}*\nTerms accepted: *${user.terms_accepted ? "Yes" : "No"}*\nGenerations: *${genCount || 0}*\nJoined: *${new Date(user.created_at).toLocaleDateString()}*`,
     { parse_mode: "Markdown" }
   );
 });
@@ -652,21 +736,21 @@ bot.command("broadcast", async (ctx) => {
   const message = ctx.message.text.replace("/broadcast", "").trim();
   if (!message) return ctx.reply("Usage: /broadcast your message here");
   const { data: users } = await supabase.from("users").select("telegram_id");
-  if (!users || users.length === 0) return ctx.reply("No users to broadcast to.");
+  if (!users || users.length === 0) return ctx.reply("No users.");
   let sent = 0; let failed = 0;
   await ctx.reply(`📢 Broadcasting to ${users.length} users...`);
   for (const user of users) {
     try {
-      await bot.telegram.sendMessage(user.telegram_id, `📢 *Announcement*\n\n${message}`, { parse_mode: "Markdown" });
+      await bot.telegram.sendMessage(user.telegram_id, `📢 *Announcement from ${BOT_NAME}*\n\n${message}`, { parse_mode: "Markdown" });
       sent++;
     } catch(e) { failed++; }
     await new Promise(r => setTimeout(r, 50));
   }
-  ctx.reply(`✅ Done!\n\n✓ Sent: *${sent}*\n✗ Failed: *${failed}*`, { parse_mode: "Markdown" });
+  ctx.reply(`✅ Done! Sent: *${sent}* | Failed: *${failed}*`, { parse_mode: "Markdown" });
 });
 
 // ── LAUNCH ────────────────────────────────────────────────────
 bot.launch();
-console.log("🤖 Bot running...");
+console.log("🤖 PvrtyXbot running...");
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
