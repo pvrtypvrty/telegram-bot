@@ -72,6 +72,8 @@ By clicking *I Agree*, you confirm you have read and agree to these Terms of Ser
 const pendingPhotos = new Map();
 const pendingEdits = new Map();
 const pendingVideos = new Map();
+const pendingReferences = new Map();  // collecting reference images
+const pendingRefPrompt = new Map();   // waiting for prompt after references collected
 
 // ── HELPERS ──────────────────────────────────────────────────
 async function getOrCreateUser(telegramId, username, referredBy = null) {
@@ -221,14 +223,13 @@ async function showMainMenu(ctx, user) {
   try {
     // Try to send with the PvrtyXbot logo
     await ctx.replyWithPhoto(
-      { url: "https://imgur.com/a/qFXlIst" }, // placeholder - replace with actual image URL
+      { url: "https://i.imgur.com/yXOvdOSm.png" }, // placeholder - replace with actual image URL
       {
         caption: welcomeText,
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
           [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
-      [Markup.button.url("💬 Support", "https://t.me/pvrtypvrty")],
         ])
       }
     );
@@ -239,7 +240,6 @@ async function showMainMenu(ctx, user) {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
         [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
-      [Markup.button.url("💬 Support", "https://t.me/pvrtypvrty")],
       ])
     });
   }
@@ -420,12 +420,33 @@ bot.on("photo", async (ctx) => {
   if (!await requireTerms(ctx)) return;
   const telegramId = ctx.from.id.toString();
   const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+  // If user is in reference collection mode, add to their collection
+  if (pendingReferences.has(telegramId)) {
+    const refs = pendingReferences.get(telegramId);
+    refs.fileIds.push(fileId);
+    pendingReferences.set(telegramId, refs);
+    await ctx.reply(
+      `📸 *Reference ${refs.fileIds.length} added!*\n\nSend more photos or tap *Generate* when ready.`,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback(`✅ Generate from ${refs.fileIds.length} reference(s)`, "ref_done")],
+          [Markup.button.callback("❌ Cancel", "ref_cancel")],
+        ])
+      }
+    );
+    return;
+  }
+
+  // Normal photo — show options
   pendingPhotos.set(telegramId, { fileId, timestamp: Date.now() });
   setTimeout(() => pendingPhotos.delete(telegramId), 10 * 60 * 1000);
   await ctx.reply(`📸 *Image received!*\n\nWhat do you want to do?`, {
     parse_mode: "Markdown",
     ...Markup.inlineKeyboard([
       [Markup.button.callback(`✏️ Edit it (${COST_PER_EDIT} credits)`, "choose_edit")],
+      [Markup.button.callback(`🎨 Use as Reference (${COST_PER_IMAGE} credits)`, "choose_reference")],
       [Markup.button.callback(`🎬 Animate into video (${COST_PER_VIDEO} credits)`, "choose_video")],
     ])
   });
@@ -459,9 +480,111 @@ bot.action("choose_video", async (ctx) => {
   ctx.reply(`🎬 How should I animate this?\n\nExamples:\n• slow cinematic zoom in\n• person starts walking\n• waves moving\n• camera pans right`, { parse_mode: "Markdown" });
 });
 
+// ── REFERENCE IMAGE ACTIONS ───────────────────────────────────
+bot.action("choose_reference", async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from.id.toString();
+  if (!pendingPhotos.has(telegramId)) return ctx.reply("Photo expired. Send your image again.");
+  const { fileId } = pendingPhotos.get(telegramId);
+  pendingPhotos.delete(telegramId);
+  pendingReferences.set(telegramId, { fileIds: [fileId], timestamp: Date.now() });
+  setTimeout(() => pendingReferences.delete(telegramId), 15 * 60 * 1000);
+  ctx.reply(
+    `🎨 *Reference Mode — 1 photo added!*\n\nSend up to *5 more photos* as additional references, or tap Generate now.\n\nMore references = better blending of styles!`,
+    { parse_mode: "Markdown", ...Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Generate from 1 reference", "ref_done")],
+      [Markup.button.callback("❌ Cancel", "ref_cancel")],
+    ])}
+  );
+});
+
+bot.action("ref_done", async (ctx) => {
+  await ctx.answerCbQuery();
+  const telegramId = ctx.from.id.toString();
+  if (!pendingReferences.has(telegramId)) return ctx.reply("Session expired. Please start again.");
+  const { fileIds } = pendingReferences.get(telegramId);
+  const userData = await getCredits(telegramId);
+  const sub = isSub(userData);
+  if (!sub && (!userData || userData.credits < COST_PER_IMAGE)) {
+    pendingReferences.delete(telegramId);
+    return ctx.reply(`❌ Need *${COST_PER_IMAGE}* credits.`, { parse_mode: "Markdown" });
+  }
+  pendingRefPrompt.set(telegramId, { fileIds, timestamp: Date.now() });
+  pendingReferences.delete(telegramId);
+  setTimeout(() => pendingRefPrompt.delete(telegramId), 10 * 60 * 1000);
+  ctx.reply(
+    `✨ *${fileIds.length} reference(s) ready!*\n\nDescribe what you want to generate:\n\n• "cinematic portrait in this style"\n• "combine these styles into one image"\n• "similar scene but at night"\n• "fashion photo with this aesthetic"`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.action("ref_cancel", async (ctx) => {
+  await ctx.answerCbQuery();
+  pendingReferences.delete(ctx.from.id.toString());
+  pendingRefPrompt.delete(ctx.from.id.toString());
+  ctx.reply("❌ Cancelled.");
+});
+
 // ── HANDLE TEXT ───────────────────────────────────────────────
 bot.on("text", async (ctx) => {
   const telegramId = ctx.from.id.toString();
+
+  // Handle reference prompt
+  if (pendingRefPrompt.has(telegramId)) {
+    const { fileIds } = pendingRefPrompt.get(telegramId);
+    const refPrompt = parsePrompt(ctx.message.text);
+    pendingRefPrompt.delete(telegramId);
+    const userData = await getCredits(telegramId);
+    if (!userData) return ctx.reply("Use /start first.");
+    const sub = isSub(userData);
+    if (!sub && userData.credits < COST_PER_IMAGE) return ctx.reply(`❌ Not enough credits.`);
+    const thinkingMsg = await ctx.reply(`🎨 Generating from ${fileIds.length} reference(s)... ~30 seconds`);
+    try {
+      if (!sub) await deductCredits(telegramId, COST_PER_IMAGE);
+      const enhancedPrompt = await enhancePrompt(refPrompt, "image");
+
+      // Get file links for all references
+      const fileLinks = await Promise.all(
+        fileIds.map(fid => ctx.telegram.getFileLink(fid).then(l => l.href))
+      );
+
+      // Build input with reference images
+      const input = {
+        prompt: enhancedPrompt,
+        aspect_ratio: "9:16",
+        output_format: "jpg",
+      };
+
+      // Nano Banana Pro supports multiple reference images
+      if (fileLinks.length === 1) {
+        input.reference_image = fileLinks[0];
+      } else {
+        input.reference_images = fileLinks.slice(0, 5); // max 5
+      }
+
+      const output = await replicate.run("google/nano-banana-pro", { input });
+      const imageUrl = getUrl(output);
+      await logGeneration(telegramId, `[REF] ${refPrompt}`, imageUrl);
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+      const newCredits = sub ? userData.credits : userData.credits - COST_PER_IMAGE;
+      const msg = await ctx.replyWithPhoto({ url: imageUrl }, {
+        caption: `✅ *Generated from ${fileIds.length} reference(s)!*\n\n📝 _${refPrompt.substring(0, 80)}_\n` +
+          (sub ? `⭐ Unlimited\n` : `💳 Credits left: *${newCredits}*\n`) +
+          `\n⏱ _Deletes in 1 hour_`,
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Generate Another", "generate_help"), Markup.button.callback("✏️ Edit This", "edit_help")],
+        ]),
+      });
+      autoDelete(ctx.chat.id, msg.message_id);
+    } catch (err) {
+      console.error("Reference gen error:", err.message);
+      if (!sub) await refundCredits(telegramId, COST_PER_IMAGE);
+      try { await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id); } catch(e) {}
+      ctx.reply("❌ Generation failed. Credits refunded.");
+    }
+    return;
+  }
 
   if (pendingEdits.has(telegramId)) {
     const { fileId } = pendingEdits.get(telegramId);
