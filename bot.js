@@ -228,6 +228,7 @@ async function showMainMenu(ctx, user) {
         ...Markup.inlineKeyboard([
           [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
           [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
+      [Markup.button.url("💬 Support", "https://t.me/pvrtypvrty")],
         ])
       }
     );
@@ -238,6 +239,7 @@ async function showMainMenu(ctx, user) {
       ...Markup.inlineKeyboard([
         [Markup.button.callback("🎨 Generate Image", "generate_help"), Markup.button.callback("🎬 Generate Video", "video_help")],
         [Markup.button.callback("✏️ Edit My Image", "edit_help"), Markup.button.callback("💰 Buy Credits", "buy_menu")],
+      [Markup.button.url("💬 Support", "https://t.me/pvrtypvrty")],
       ])
     });
   }
