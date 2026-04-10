@@ -1,16 +1,25 @@
 // ============================================================
-// STRIPE WEBHOOK SERVER — webhook.js
+// STRIPE WEBHOOK SERVER — webhook.js (NO Telegraf - uses direct HTTP)
 // ============================================================
 require("dotenv").config();
 const express = require("express");
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
-const { Telegraf } = require("telegraf");
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// Send Telegram message directly via HTTP (no Telegraf needed)
+async function sendTelegramMessage(chatId, text) {
+  try {
+    await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
+    });
+  } catch(e) { console.error("Telegram notify error:", e.message); }
+}
 
 // RAW body for Stripe signature verification
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -19,7 +28,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error("Webhook error:", err.message);
+    console.error("Webhook signature error:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -30,17 +39,15 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
     if (type === "credits") {
       const { data: user } = await supabase.from("users").select("credits").eq("telegram_id", telegram_id).single();
       if (user) {
-        await supabase.from("users").update({ credits: user.credits + parseInt(credits) }).eq("telegram_id", telegram_id);
+        const newBalance = user.credits + parseInt(credits);
+        await supabase.from("users").update({ credits: newBalance }).eq("telegram_id", telegram_id);
         await supabase.from("transactions").insert({
           telegram_id, type: "credit_purchase", credits: parseInt(credits),
           stripe_session_id: session.id, amount_paid: session.amount_total
         });
-        try {
-          await bot.telegram.sendMessage(telegram_id,
-            `✅ *Payment successful!*\n\n*${credits} credits* have been added to your account!\n\nUse /balance to check your balance.`,
-            { parse_mode: "Markdown" }
-          );
-        } catch(e) {}
+        await sendTelegramMessage(telegram_id,
+          `✅ *Payment successful!*\n\n*${credits} credits* have been added!\n\nNew balance: *${newBalance} credits*\n\nUse /balance to confirm.`
+        );
         console.log(`✅ Added ${credits} credits to user ${telegram_id}`);
       }
     }
@@ -57,12 +64,9 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
         telegram_id, type: "subscription",
         stripe_session_id: session.id, amount_paid: session.amount_total
       });
-      try {
-        await bot.telegram.sendMessage(telegram_id,
-          `⭐ *Subscription activated!*\n\nYou now have *unlimited* image generation, editing and video for 30 days!\n\nUse /balance to confirm.`,
-          { parse_mode: "Markdown" }
-        );
-      } catch(e) {}
+      await sendTelegramMessage(telegram_id,
+        `⭐ *Subscription activated!*\n\nYou now have *unlimited* image generation, editing & video for 30 days!\n\nUse /balance to confirm.`
+      );
       console.log(`✅ Subscription activated for user ${telegram_id}`);
     }
   }
@@ -87,20 +91,21 @@ app.get("/payment-success", (req, res) => {
       <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
       <title>Payment Successful</title>
       <style>
-        body { font-family: -apple-system, sans-serif; background: #0a0a0a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-        .box { text-align: center; padding: 40px; max-width: 400px; }
-        .icon { font-size: 72px; margin-bottom: 20px; }
-        h1 { font-size: 28px; margin-bottom: 12px; color: #47ff8a; }
-        p { color: #aaa; font-size: 16px; line-height: 1.6; }
-        .btn { display: inline-block; margin-top: 24px; background: #47ff8a; color: #000; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a0a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .box { text-align: center; padding: 48px 32px; max-width: 400px; }
+        .icon { font-size: 80px; margin-bottom: 24px; }
+        h1 { font-size: 30px; font-weight: 700; margin-bottom: 12px; color: #47ff8a; }
+        p { color: #888; font-size: 16px; line-height: 1.6; margin-bottom: 32px; }
+        .btn { display: inline-block; background: #47ff8a; color: #000; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 16px; }
       </style>
     </head>
     <body>
       <div class="box">
         <div class="icon">✅</div>
         <h1>Payment Successful!</h1>
-        <p>Your credits have been added to your account. Return to Telegram to start generating!</p>
-        <a href="https://t.me/pvrtyXbot" class="btn">Return to Bot</a>
+        <p>Your credits have been added. Return to Telegram and use /balance to check your new balance.</p>
+        <a href="https://t.me/pvrtyXbot" class="btn">Open Bot →</a>
       </div>
     </body>
     </html>
@@ -115,12 +120,13 @@ app.get("/payment-cancel", (req, res) => {
       <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
       <title>Payment Cancelled</title>
       <style>
-        body { font-family: -apple-system, sans-serif; background: #0a0a0a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-        .box { text-align: center; padding: 40px; max-width: 400px; }
-        .icon { font-size: 72px; margin-bottom: 20px; }
-        h1 { font-size: 28px; margin-bottom: 12px; color: #ff4747; }
-        p { color: #aaa; font-size: 16px; line-height: 1.6; }
-        .btn { display: inline-block; margin-top: 24px; background: #333; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a0a; color: white; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .box { text-align: center; padding: 48px 32px; max-width: 400px; }
+        .icon { font-size: 80px; margin-bottom: 24px; }
+        h1 { font-size: 30px; font-weight: 700; margin-bottom: 12px; color: #ff4747; }
+        p { color: #888; font-size: 16px; line-height: 1.6; margin-bottom: 32px; }
+        .btn { display: inline-block; background: #222; color: white; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 16px; border: 1px solid #333; }
       </style>
     </head>
     <body>
