@@ -915,6 +915,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
 
 app.use(express.json());
 
+app.get("/health", (req, res) => res.json({ status: "ok" }));
 app.get("/logo", (req, res) => res.sendFile(__dirname + "/logo.png"));
 
 app.get("/payment-success", (req, res) => {
@@ -937,6 +938,11 @@ app.listen(PORT, async () => {
     await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
     console.log(`✅ Webhook set: ${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
     console.log("🤖 PvrtyXbot running on webhook mode!");
+
+// Keep alive ping every 4 minutes
+setInterval(() => {
+  fetch(`${WEBHOOK_DOMAIN}/health`).catch(() => {});
+}, 4 * 60 * 1000);
   } catch(e) {
     console.error("Failed to set webhook:", e.message);
   }
