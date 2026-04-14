@@ -875,7 +875,8 @@ bot.command("broadcast", async (ctx) => {
 });
 
 // ── LAUNCH ────────────────────────────────────────────────────
-bot.launch();
+// Wait 5 seconds before launching to avoid 409 conflicts on restart
+setTimeout(() => bot.launch(), 5000);
 console.log("🤖 PvrtyXbot running...");
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
