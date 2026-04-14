@@ -876,34 +876,17 @@ bot.command("broadcast", async (ctx) => {
 
 // ── LAUNCH ────────────────────────────────────────────────────
 // Wait 5 seconds before launching to avoid 409 conflicts on restart
+// Launch with 409 protection
 setTimeout(() => {
   bot.launch().catch(err => {
-    if (err.description setTimeout(() => {
-  bot.launch().catch(err => {
-    if (err.description setTimeout(() => bot.launch(), 5000);setTimeout(() => bot.launch(), 5000); err.description.includes("409")) {
-      console.log("409 detected - another instance running, exiting gracefully...");
-      process.exit(0);
-    }
-    console.error(err);
-    process.exit(1);
-  });
-}, 5000);setTimeout(() => {
-  bot.launch().catch(err => {
-    if (err.description setTimeout(() => bot.launch(), 5000);setTimeout(() => bot.launch(), 5000); err.description.includes("409")) {
-      console.log("409 detected - another instance running, exiting gracefully...");
-      process.exit(0);
-    }
-    console.error(err);
-    process.exit(1);
-  });
-}, 5000); err.description.includes("409")) {
-      console.log("409 detected - another instance running, exiting gracefully...");
+    if (err.description && err.description.includes('409')) {
+      console.log('409 conflict - exiting to let other instance run');
       process.exit(0);
     }
     console.error(err);
     process.exit(1);
   });
 }, 5000);
-console.log("🤖 PvrtyXbot running...");
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+console.log('🤖 PvrtyXbot running...');
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
