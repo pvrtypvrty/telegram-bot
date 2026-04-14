@@ -890,3 +890,13 @@ setTimeout(() => {
 console.log('🤖 PvrtyXbot running...');
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+process.on('uncaughtException', (err) => {
+  if (err.message && err.message.includes('409')) {
+    console.log('409 conflict detected - waiting 30s before exit...');
+    setTimeout(() => process.exit(0), 30000);
+  } else {
+    console.error('Uncaught exception:', err);
+    process.exit(1);
+  }
+});
