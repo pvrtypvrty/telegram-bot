@@ -878,7 +878,25 @@ bot.command("broadcast", async (ctx) => {
 // Wait 5 seconds before launching to avoid 409 conflicts on restart
 setTimeout(() => {
   bot.launch().catch(err => {
+    if (err.description setTimeout(() => {
+  bot.launch().catch(err => {
     if (err.description setTimeout(() => bot.launch(), 5000);setTimeout(() => bot.launch(), 5000); err.description.includes("409")) {
+      console.log("409 detected - another instance running, exiting gracefully...");
+      process.exit(0);
+    }
+    console.error(err);
+    process.exit(1);
+  });
+}, 5000);setTimeout(() => {
+  bot.launch().catch(err => {
+    if (err.description setTimeout(() => bot.launch(), 5000);setTimeout(() => bot.launch(), 5000); err.description.includes("409")) {
+      console.log("409 detected - another instance running, exiting gracefully...");
+      process.exit(0);
+    }
+    console.error(err);
+    process.exit(1);
+  });
+}, 5000); err.description.includes("409")) {
       console.log("409 detected - another instance running, exiting gracefully...");
       process.exit(0);
     }
