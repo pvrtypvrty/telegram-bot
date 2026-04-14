@@ -874,29 +874,73 @@ bot.command("broadcast", async (ctx) => {
   ctx.reply(`✅ Done! Sent: *${sent}* | Failed: *${failed}*`, { parse_mode: "Markdown" });
 });
 
-// ── LAUNCH ────────────────────────────────────────────────────
-// Wait 5 seconds before launching to avoid 409 conflicts on restart
-// Launch with 409 protection
-setTimeout(() => {
-  bot.launch().catch(err => {
-    if (err.description && err.description.includes('409')) {
-      console.log('409 conflict - exiting to let other instance run');
-      process.exit(0);
-    }
-    console.error(err);
-    process.exit(1);
-  });
-}, 5000);
-console.log('🤖 PvrtyXbot running...');
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// ── LAUNCH VIA WEBHOOK (no polling = no 409 conflicts) ───────
+const express = require("express");
+const app = express();
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_URL;
+const WEBHOOK_PATH = "/bot-webhook";
 
-process.on('uncaughtException', (err) => {
-  if (err.message && err.message.includes('409')) {
-    console.log('409 conflict detected - waiting 30s before exit...');
-    setTimeout(() => process.exit(0), 30000);
-  } else {
-    console.error('Uncaught exception:', err);
-    process.exit(1);
+// ── STRIPE WEBHOOK ────────────────────────────────────────────
+app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  let event;
+  try { event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET); }
+  catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const { telegram_id, credits, type } = session.metadata;
+    if (type === "credits") {
+      const { data: user } = await supabase.from("users").select("credits").eq("telegram_id", telegram_id).single();
+      if (user) {
+        const newBalance = user.credits + parseInt(credits);
+        await supabase.from("users").update({ credits: newBalance }).eq("telegram_id", telegram_id);
+        await supabase.from("transactions").insert({ telegram_id, type: "credit_purchase", credits: parseInt(credits), stripe_session_id: session.id, amount_paid: session.amount_total });
+        try { await bot.telegram.sendMessage(telegram_id, `✅ *${credits} credits added!*\n\nNew balance: *${newBalance}*`, { parse_mode: "Markdown" }); } catch(e) {}
+      }
+    }
+    if (type === "subscription") {
+      const expiresAt = new Date(); expiresAt.setDate(expiresAt.getDate() + 30);
+      await supabase.from("users").update({ subscription_active: true, subscription_expires_at: expiresAt.toISOString(), stripe_subscription_id: session.subscription }).eq("telegram_id", telegram_id);
+      await supabase.from("transactions").insert({ telegram_id, type: "subscription", stripe_session_id: session.id, amount_paid: session.amount_total });
+      try { await bot.telegram.sendMessage(telegram_id, `⭐ *Subscription activated!*\n\nUnlimited access for 30 days!`, { parse_mode: "Markdown" }); } catch(e) {}
+    }
+  }
+  if (event.type === "customer.subscription.deleted") {
+    await supabase.from("users").update({ subscription_active: false, subscription_expires_at: null }).eq("stripe_subscription_id", event.data.object.id);
+  }
+  res.json({ received: true });
+});
+
+app.use(express.json());
+
+app.get("/logo", (req, res) => res.sendFile(__dirname + "/logo.png"));
+
+app.get("/payment-success", (req, res) => {
+  res.send(`<html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh}.box{text-align:center;padding:48px 32px;max-width:400px}.icon{font-size:80px;margin-bottom:24px}h1{font-size:28px;font-weight:700;margin-bottom:12px;color:#47ff8a}p{color:#888;font-size:16px;line-height:1.6;margin-bottom:32px}.btn{display:inline-block;background:#47ff8a;color:#000;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px}</style></head><body><div class="box"><div class="icon">✅</div><h1>Payment Successful!</h1><p>Your credits have been added. Return to Telegram and use /balance to check.</p><a href="https://t.me/pvrtyXbot" class="btn">Open Bot →</a></div></body></html>`);
+});
+
+app.get("/payment-cancel", (req, res) => {
+  res.send(`<html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:white;display:flex;align-items:center;justify-content:center;min-height:100vh}.box{text-align:center;padding:48px 32px;max-width:400px}.icon{font-size:80px;margin-bottom:24px}h1{font-size:28px;font-weight:700;margin-bottom:12px;color:#ff4747}p{color:#888;font-size:16px;line-height:1.6;margin-bottom:32px}.btn{display:inline-block;background:#222;color:white;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;border:1px solid #333}</style></head><body><div class="box"><div class="icon">❌</div><h1>Payment Cancelled</h1><p>No charge was made. Return to Telegram and try again.</p><a href="https://t.me/pvrtyXbot" class="btn">Return to Bot</a></div></body></html>`);
+});
+
+// Telegram webhook endpoint
+app.post(WEBHOOK_PATH, express.json(), (req, res) => {
+  bot.handleUpdate(req.body, res);
+});
+
+// Start server then set webhook
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  try {
+    await bot.telegram.setWebhook(`${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
+    console.log(`✅ Webhook set: ${WEBHOOK_DOMAIN}${WEBHOOK_PATH}`);
+    console.log("🤖 PvrtyXbot running on webhook mode!");
+  } catch(e) {
+    console.error("Failed to set webhook:", e.message);
   }
 });
+
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
